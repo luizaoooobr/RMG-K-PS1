@@ -111,6 +111,10 @@ void GameSelectDialog::buildTree(void)
         {
             continue;
         }
+        else if ((filterIndex == 3) && (data.type != CoreRomType::PlayStation))
+        {
+            continue;
+        }
 
         // search filter
         QString name = this->getDisplayName(data);
@@ -242,7 +246,12 @@ void GameSelectDialog::updateInfoPanel(void)
 
     this->nameLabel->setText(this->getDisplayName(data));
     this->regionLabel->setText(QString::fromStdString(data.header.Region).isEmpty() ? "-" : QString::fromStdString(data.header.Region));
-    this->typeLabel->setText(data.type == CoreRomType::Arcade ? tr("Arcade") : tr("Cartridge"));
+    if (data.type == CoreRomType::Arcade)
+        this->typeLabel->setText(tr("Arcade"));
+    else if (data.type == CoreRomType::PlayStation)
+        this->typeLabel->setText(tr("PlayStation"));
+    else
+        this->typeLabel->setText(tr("Cartridge"));
     this->saveLabel->setText(this->getSaveTypeName(data.settings.SaveType));
     this->md5Label->setText(QString::fromStdString(data.settings.MD5));
     this->fileLabel->setText(QDir::toNativeSeparators(data.file));

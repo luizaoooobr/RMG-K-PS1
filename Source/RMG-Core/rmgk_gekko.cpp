@@ -75,7 +75,16 @@ namespace
 // larger drivers while keeping each rollback buffer (and the copies GekkoNet
 // makes of it) small. The old 24 MB value was 42x the real state and is what
 // made multi-buffer allocation and per-save copies expensive.
-constexpr unsigned int kGekkoStateCapacity = 2u * 1024u * 1024u;
+//
+// A libretro core serializes much more (Beetle PSX: 2 MB RAM + 1 MB VRAM +
+// SPU/CD state -> ~5 MB), so the capacity is per-session instead of a constant:
+// FBNeo always keeps the historical 2 MB, and a libretro session is sized from
+// retro_serialize_size() by the caller before it starts (see
+// rmgk_gekko::set_state_capacity_bytes).
+constexpr unsigned int kFbneoStateCapacityBytes = 2u * 1024u * 1024u;
+constexpr unsigned int kStateCapacityMinBytes = 1u * 1024u * 1024u;
+constexpr unsigned int kStateCapacityMaxBytes = 64u * 1024u * 1024u;
+unsigned int g_GekkoStateCapacity = kFbneoStateCapacityBytes;
 constexpr int kGekkoMaxLoggedFrames = 600;
 constexpr int kGekkoWaitSleepUs = 1000;
 // PreciseWaitFor busy-spins this tail only; the remainder is a kernel sleep.
@@ -227,7 +236,7 @@ std::filesystem::path g_GekkoLogStreamPath;
 std::filesystem::path g_GekkoLogDirectory;
 std::string g_GekkoLogPrefix;
 int g_GekkoLogFrames = 0;
-uint32_t g_GekkoLastSubmittedInput = 0xffffffffu;
+std::vector<unsigned char> g_GekkoLastSubmittedInput;
 std::vector<unsigned char> g_GekkoLastLatchedInput;
 int g_GekkoWaitingLoops = 0;
 int g_GekkoLocalInputLogRepeats = 0;
@@ -949,6 +958,19 @@ std::string hex_input(uint32_t value)
     return stream.str();
 }
 
+// Wide (libretro) input packets: print the whole packet without truncation so
+// the analog bytes are visible in the log too.
+std::string hex_input(const unsigned char* data, size_t size)
+{
+    std::ostringstream stream;
+    stream << "0x" << std::hex << std::setfill('0');
+    for (size_t i = 0; i < size; i++)
+    {
+        stream << std::setw(2) << static_cast<unsigned int>(data[i]);
+    }
+    return stream.str();
+}
+
 void set_environment_value(const char* name, const std::string& value)
 {
 #ifdef _WIN32
@@ -1069,7 +1091,7 @@ void reset_gekko_log()
     if (!g_GekkoLogEnabled && !g_GekkoStallLogEnabled)
     {
         g_GekkoLogFrames = 0;
-        g_GekkoLastSubmittedInput = 0xffffffffu;
+        g_GekkoLastSubmittedInput.clear();
         g_GekkoLastLatchedInput.clear();
         g_GekkoWaitingLoops = 0;
         g_GekkoLocalInputLogRepeats = 0;
@@ -1093,7 +1115,7 @@ void reset_gekko_log()
          << " stall_only=" << ((g_GekkoStallLogEnabled && !g_GekkoLogEnabled) ? 1 : 0) << ")\n";
     g_GekkoLogStream.flush();
     g_GekkoLogFrames = 0;
-    g_GekkoLastSubmittedInput = 0xffffffffu;
+    g_GekkoLastSubmittedInput.clear();
     g_GekkoLastLatchedInput.clear();
     g_GekkoWaitingLoops = 0;
     g_GekkoLocalInputLogRepeats = 0;
@@ -1713,9 +1735,9 @@ void test_state_roundtrip(const unsigned char* state, int len, int frame, int sa
         return;
     }
 
-    std::vector<unsigned char> resaved(static_cast<std::size_t>(kGekkoStateCapacity));
+    std::vector<unsigned char> resaved(static_cast<std::size_t>(g_GekkoStateCapacity));
     CoreRollbackState result;
-    if (!CoreRollbackSaveGameStateInto(result, resaved.data(), static_cast<int>(kGekkoStateCapacity), frame))
+    if (!CoreRollbackSaveGameStateInto(result, resaved.data(), static_cast<int>(g_GekkoStateCapacity), frame))
     {
         std::ostringstream stream;
         stream << "state_roundtrip frame=" << frame << " result=save_fail";
@@ -1817,7 +1839,7 @@ bool save_gekko_state(const PendingGekkoSave& save)
         return false;
     }
 
-    if (!CoreRollbackSaveGameStateInto(state, save.state, static_cast<int>(kGekkoStateCapacity), save.frame))
+    if (!CoreRollbackSaveGameStateInto(state, save.state, static_cast<int>(g_GekkoStateCapacity), save.frame))
     {
         g_GekkoLastSaveStateUs = timingEnabled
             ? std::chrono::duration_cast<std::chrono::microseconds>(
@@ -1829,11 +1851,11 @@ bool save_gekko_state(const PendingGekkoSave& save)
         return false;
     }
 
-    if (state.len < 1 || static_cast<unsigned int>(state.len) > kGekkoStateCapacity)
+    if (state.len < 1 || static_cast<unsigned int>(state.len) > g_GekkoStateCapacity)
     {
         std::ostringstream stream;
         stream << "save_state result=fail reason=state_too_large len=" << state.len
-               << " capacity=" << kGekkoStateCapacity;
+               << " capacity=" << g_GekkoStateCapacity;
         write_gekko_log(stream.str());
         CoreSetError("GekkoNet rollback state exceeded configured state buffer");
         return false;
@@ -1986,7 +2008,16 @@ bool submit_local_input()
 {
     const bool localOnlySession = g_GekkoRemoteHandle < 0 && g_GekkoLocalHandles.size() > 1;
     const int samplePlayers = localOnlySession ? g_GekkoPlayers : 1;
-    std::vector<uint32_t> physicalInputs(static_cast<size_t>(std::max(samplePlayers, 1)), 0);
+    const size_t inputSize = static_cast<size_t>(std::max(g_GekkoInputSize, 1));
+    const size_t packetBytes = inputSize;
+
+    // FBNeo packets are a single uint32; a libretro core (PS1) uses a wider
+    // struct, so the physical buffer is addressed in bytes and the 4-byte-only
+    // helpers below are gated on the packet size.
+    std::vector<unsigned char> physicalInputs(
+        static_cast<size_t>(std::max(samplePlayers, 1)) * packetBytes, 0);
+
+    const bool uint32Packets = (g_GekkoInputSize == static_cast<int>(sizeof(uint32_t)));
 
     // Replay/spectate: every seat's input comes from the .krec through n02's
     // playback module (the same call the N64 PIF sync path uses). Physical
@@ -1998,9 +2029,11 @@ bool submit_local_input()
             static_cast<size_t>(std::max(g_GekkoPlayers, 4)), 0);
         if (CoreModifyKailleraPlayValues(playbackInputs.data(), sizeof(uint32_t)) >= 0)
         {
+            const size_t copyBytes = std::min(packetBytes, sizeof(uint32_t));
             for (int i = 0; i < samplePlayers; i++)
             {
-                physicalInputs[static_cast<size_t>(i)] = playbackInputs[static_cast<size_t>(i)];
+                std::memcpy(physicalInputs.data() + static_cast<size_t>(i) * packetBytes,
+                    &playbackInputs[static_cast<size_t>(i)], copyBytes);
             }
         }
     }
@@ -2021,12 +2054,19 @@ bool submit_local_input()
             continue;
         }
 
-        uint32_t input = localOnlySession ? physicalInputs[playerIndex] : physicalInputs[0];
+        const unsigned char* input = localOnlySession
+            ? physicalInputs.data() + playerIndex * packetBytes
+            : physicalInputs.data();
+        std::vector<unsigned char> packet(input, input + packetBytes);
+
         {
             std::lock_guard<std::mutex> lock(g_GekkoClientReplayMutex);
-            if (!localOnlySession && g_GekkoLocalPlayer > 1 && g_GekkoClientReplayMode == ClientInputReplayMode::Recording)
+            if (!localOnlySession && g_GekkoLocalPlayer > 1 && uint32Packets &&
+                g_GekkoClientReplayMode == ClientInputReplayMode::Recording)
             {
-                g_GekkoClientReplayInputs.push_back(input);
+                uint32_t raw = 0;
+                std::memcpy(&raw, packet.data(), sizeof(uint32_t));
+                g_GekkoClientReplayInputs.push_back(raw);
                 if (g_GekkoClientReplayInputs.size() >= kGekkoClientReplayFrames)
                 {
                     g_GekkoClientReplayMode = ClientInputReplayMode::Playing;
@@ -2034,10 +2074,12 @@ bool submit_local_input()
                     write_gekko_log("client_input_replay mode=playing recorded_frames=600");
                 }
             }
-            else if (!localOnlySession && g_GekkoLocalPlayer > 1 && g_GekkoClientReplayMode == ClientInputReplayMode::Playing &&
+            else if (!localOnlySession && g_GekkoLocalPlayer > 1 && uint32Packets &&
+                g_GekkoClientReplayMode == ClientInputReplayMode::Playing &&
                 !g_GekkoClientReplayInputs.empty())
             {
-                input = g_GekkoClientReplayInputs[g_GekkoClientReplayIndex++];
+                const uint32_t raw = g_GekkoClientReplayInputs[g_GekkoClientReplayIndex++];
+                std::memcpy(packet.data(), &raw, sizeof(uint32_t));
                 if (g_GekkoClientReplayIndex >= g_GekkoClientReplayInputs.size())
                 {
                     g_GekkoClientReplayIndex = 0;
@@ -2045,7 +2087,7 @@ bool submit_local_input()
             }
         }
 
-        gekko_add_local_input(g_GekkoSession, handle, &input);
+        gekko_add_local_input(g_GekkoSession, handle, packet.data());
         submitted = true;
 
         if (player != g_GekkoLocalPlayer)
@@ -2053,7 +2095,8 @@ bool submit_local_input()
             continue;
         }
 
-        const bool changed = input != g_GekkoLastSubmittedInput;
+        const bool changed = g_GekkoLastSubmittedInput.size() != packet.size() ||
+            std::memcmp(g_GekkoLastSubmittedInput.data(), packet.data(), packet.size()) != 0;
         if (changed)
         {
             g_GekkoLocalInputLogRepeats = 0;
@@ -2069,11 +2112,11 @@ bool submit_local_input()
             std::ostringstream stream;
             stream << "add_local_input local_player=" << player
                    << " handle=" << handle
-                   << " physical_p" << (localOnlySession ? player : 1) << "=" << hex_input(input)
+                   << " physical_p" << (localOnlySession ? player : 1) << "=" << hex_input(packet.data(), packet.size())
                    << " repeat=" << g_GekkoLocalInputLogRepeats;
             write_gekko_log(stream.str());
         }
-        g_GekkoLastSubmittedInput = input;
+        g_GekkoLastSubmittedInput = packet;
     }
 
     return submitted;
@@ -3069,11 +3112,19 @@ bool rmgk_gekko::start_p2p_session(const char* gameName, int players, int inputS
     g_GekkoStopRequested.store(false, std::memory_order_relaxed);
     reset_gekko_log();
 
-    if (gameName == nullptr || players < 2 || players > 4 || inputSize != static_cast<int>(sizeof(uint32_t)) ||
+    if (gameName == nullptr || players < 2 || players > 4 ||
+        inputSize < 4 || inputSize > 16 ||
         localPlayer < 1 || localPlayer > players || remoteIp == nullptr || remoteIp[0] == '\0' || remotePort == 0)
     {
         write_gekko_log("start_p2p_session result=fail reason=invalid_params");
         return false;
+    }
+
+    // FBNeo (4-byte input) keeps the historical tight ring; a libretro session
+    // sizes it through set_state_capacity_bytes() before calling in.
+    if (inputSize == static_cast<int>(sizeof(uint32_t)))
+    {
+        g_GekkoStateCapacity = kFbneoStateCapacityBytes;
     }
 
     if (!gekko_create(&g_GekkoSession, GekkoGameSession))
@@ -3090,7 +3141,7 @@ bool rmgk_gekko::start_p2p_session(const char* gameName, int players, int inputS
     config.max_spectators = 0;
     config.input_prediction_window = static_cast<unsigned char>(clampedPredictionWindow);
     config.input_size = static_cast<unsigned int>(inputSize);
-    config.state_size = kGekkoStateCapacity;
+    config.state_size = g_GekkoStateCapacity;
     // BISECT: restore the first-commit rollback cadence. With limited_saving
     // the ring keeps only 2 states and saves once per prediction window, so a
     // rewind re-simulates a much longer span; for FBNeo that span re-renders
@@ -3159,7 +3210,7 @@ bool rmgk_gekko::start_p2p_session(const char* gameName, int players, int inputS
                << " clamped_prediction_window=" << clampedPredictionWindow
                << " cpu_mode=dynarec"
                << " dynarec_rollback=pumped"
-               << " state_capacity=" << kGekkoStateCapacity;
+               << " state_capacity=" << g_GekkoStateCapacity;
         write_gekko_log(stream.str());
     }
 
@@ -3270,12 +3321,18 @@ bool rmgk_gekko::start_lobby_session(const char* gameName, int players, int inpu
     // `players` is the highest occupied SEAT, not the player count â€” seats may
     // be sparse (P1 + P3 with P2 empty), so numRemotes can be short of
     // players - 1. It can never exceed it: seats are unique and one is ours.
-    if (gameName == nullptr || players < 2 || players > 4 || inputSize != static_cast<int>(sizeof(uint32_t)) ||
+    if (gameName == nullptr || players < 2 || players > 4 ||
+        inputSize < 4 || inputSize > 16 ||
         localPlayer < 1 || localPlayer > players || remotes == nullptr ||
         numRemotes < 1 || numRemotes > players - 1)
     {
         write_gekko_log("start_lobby_session result=fail reason=invalid_params");
         return false;
+    }
+
+    if (inputSize == static_cast<int>(sizeof(uint32_t)))
+    {
+        g_GekkoStateCapacity = kFbneoStateCapacityBytes;
     }
 
     // Validate per-remote ICE identities (or legacy endpoints) and slot
@@ -3343,7 +3400,7 @@ bool rmgk_gekko::start_lobby_session(const char* gameName, int players, int inpu
     config.max_spectators = 0;
     config.input_prediction_window = static_cast<unsigned char>(clampedPredictionWindow);
     config.input_size = static_cast<unsigned int>(inputSize);
-    config.state_size = kGekkoStateCapacity;
+    config.state_size = g_GekkoStateCapacity;
     // BISECT: restore the first-commit rollback cadence. With limited_saving
     // the ring keeps only 2 states and saves once per prediction window, so a
     // rewind re-simulates a much longer span; for FBNeo that span re-renders
@@ -3558,10 +3615,16 @@ bool rmgk_gekko::start_local_session(const char* gameName, int players, int inpu
     g_GekkoStopRequested.store(false, std::memory_order_relaxed);
     reset_gekko_log();
 
-    if (gameName == nullptr || players < 1 || players > 4 || inputSize != static_cast<int>(sizeof(uint32_t)))
+    if (gameName == nullptr || players < 1 || players > 4 ||
+        inputSize < 4 || inputSize > 16)
     {
         write_gekko_log("start_local_session result=fail reason=invalid_params");
         return false;
+    }
+
+    if (inputSize == static_cast<int>(sizeof(uint32_t)))
+    {
+        g_GekkoStateCapacity = kFbneoStateCapacityBytes;
     }
 
     if (!gekko_create(&g_GekkoSession, GekkoGameSession))
@@ -3578,7 +3641,7 @@ bool rmgk_gekko::start_local_session(const char* gameName, int players, int inpu
     config.max_spectators = 0;
     config.input_prediction_window = static_cast<unsigned char>(predictionWindow);
     config.input_size = static_cast<unsigned int>(inputSize);
-    config.state_size = kGekkoStateCapacity;
+    config.state_size = g_GekkoStateCapacity;
     // BISECT: restore the first-commit rollback cadence. With limited_saving
     // the ring keeps only 2 states and saves once per prediction window, so a
     // rewind re-simulates a much longer span; for FBNeo that span re-renders
@@ -3775,6 +3838,24 @@ void rmgk_gekko::request_stop()
 bool rmgk_gekko::is_stop_requested()
 {
     return g_GekkoStopRequested.load(std::memory_order_relaxed);
+}
+
+void rmgk_gekko::set_state_capacity_bytes(unsigned int bytes)
+{
+    if (bytes < kStateCapacityMinBytes)
+    {
+        bytes = kStateCapacityMinBytes;
+    }
+    if (bytes > kStateCapacityMaxBytes)
+    {
+        bytes = kStateCapacityMaxBytes;
+    }
+    g_GekkoStateCapacity = bytes;
+}
+
+unsigned int rmgk_gekko::state_capacity_bytes()
+{
+    return g_GekkoStateCapacity;
 }
 
 void rmgk_gekko::request_disconnect_player(int slot)

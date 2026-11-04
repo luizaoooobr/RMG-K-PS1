@@ -16,7 +16,8 @@ enum class CoreRomType
 {
     Cartridge = 0,
     Disk      = 1,
-    Arcade    = 2
+    Arcade    = 2,
+    PlayStation = 3
 };
 
 // opens the given file as ROM

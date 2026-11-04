@@ -15,6 +15,7 @@
 #include "UserInterface/Dialog/AboutDialog.hpp"
 #include "UserInterface/Dialog/UnifiedInputDialog.hpp"
 #include "UserInterface/Dialog/Arcade/ArcadeInputDialog.hpp"
+#include "UserInterface/Dialog/Psx/PsxInputDialog.hpp"
 #include "UserInterface/Dialog/Arcade/ArcadeDipDialog.hpp"
 #include "Dialog/Cheats/CheatsDialog.hpp"
 #include "Dialog/SettingsDialog.hpp"
@@ -3225,6 +3226,7 @@ void MainWindow::connectActionSignals(void)
     connect(this->action_Settings_Settings, &QAction::triggered, this, &MainWindow::on_Action_Settings_Settings);
     connect(this->action_Settings_Plugins, &QAction::triggered, this, &MainWindow::on_Action_Settings_Plugins);
     connect(this->action_Arcade_Input, &QAction::triggered, this, &MainWindow::on_Action_Arcade_Input);
+    connect(this->action_Psx_Input, &QAction::triggered, this, &MainWindow::on_Action_Psx_Input);
     connect(this->action_Arcade_Dip, &QAction::triggered, this, &MainWindow::on_Action_Arcade_Dip);
     connect(this->action_Toolbar_Input, &QAction::triggered, this, &MainWindow::on_Action_Settings_Input);
     connect(this->action_Toolbar_Playback, &QAction::triggered, this, &MainWindow::on_Action_Playback);
@@ -3420,9 +3422,10 @@ void MainWindow::timerEvent(QTimerEvent *event)
             return;
         }
 
-        // Arcade (FBNeo) sessions don't run the mupen64plus core, so toggle the
-        // window directly instead of going through the core state.
-        if (CoreIsFbneoSessionActive())
+        // Arcade (FBNeo) and PlayStation (libretro) sessions don't run the
+        // mupen64plus core, so toggle the window directly instead of going
+        // through the core state.
+        if (CoreIsFbneoSessionActive() || CoreIsLibretroSessionActive())
         {
             this->on_VidExt_ToggleFS(true);
             this->killTimer(timerId);
@@ -4176,7 +4179,7 @@ void MainWindow::on_Action_System_SaveAs(void)
     bool isRunning = CoreIsEmulationRunning();
     bool isPaused = CoreIsEmulationPaused();
 
-    if (isRunning && !isPaused && !CoreIsFbneoSessionActive())
+    if (isRunning && !isPaused && !CoreIsFbneoSessionActive() && !CoreIsLibretroSessionActive())
     {
         this->on_Action_System_Pause();
     }
@@ -4201,7 +4204,7 @@ void MainWindow::on_Action_System_SaveAs(void)
         }
     }
 
-    if (isRunning && !isPaused && !CoreIsFbneoSessionActive())
+    if (isRunning && !isPaused && !CoreIsFbneoSessionActive() && !CoreIsLibretroSessionActive())
     {
         this->on_Action_System_Pause();
     }
@@ -4232,7 +4235,7 @@ void MainWindow::on_Action_System_Load(void)
         this->on_Action_System_Pause();
     }
 
-    if (isRunning && !isPaused && !CoreIsFbneoSessionActive())
+    if (isRunning && !isPaused && !CoreIsFbneoSessionActive() && !CoreIsLibretroSessionActive())
     {
         this->on_Action_System_Pause();
     }
@@ -4255,7 +4258,7 @@ void MainWindow::on_Action_System_Load(void)
         }
     }
 
-    if (isRunning && !isPaused && !CoreIsFbneoSessionActive())
+    if (isRunning && !isPaused && !CoreIsFbneoSessionActive() && !CoreIsLibretroSessionActive())
     {
         this->on_Action_System_Pause();
     }
@@ -4457,6 +4460,12 @@ void MainWindow::on_Action_Arcade_Input(void)
     });
 
     Dialog::ArcadeInputDialog dialog(this, games);
+    dialog.exec();
+}
+
+void MainWindow::on_Action_Psx_Input(void)
+{
+    Dialog::PsxInputDialog dialog(this);
     dialog.exec();
 }
 
@@ -4886,9 +4895,10 @@ void MainWindow::on_Action_View_UniformSize(bool checked)
 
 void MainWindow::on_Action_View_Fullscreen(void)
 {
-    // Arcade (FBNeo) sessions never run the mupen64plus core, so the core-state
-    // fullscreen toggle fails with INVALID_STATE. Toggle the window directly.
-    if (CoreIsFbneoSessionActive())
+    // Arcade (FBNeo) and PlayStation (libretro) sessions never run the
+    // mupen64plus core, so the core-state fullscreen toggle fails with
+    // INVALID_STATE. Toggle the window directly.
+    if (CoreIsFbneoSessionActive() || CoreIsLibretroSessionActive())
     {
         this->on_VidExt_ToggleFS(!this->isFullScreen());
         return;

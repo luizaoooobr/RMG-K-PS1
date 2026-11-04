@@ -72,6 +72,12 @@ class rmgk_gekko
         const LobbyRemotePeer* remotes, int numRemotes,
         int localDelay, int predictionWindow);
     static bool start_local_session(const char* gameName, int players, int inputSize, int localDelay);
+    // Sizes the per-frame rollback state ring for the next session. FBNeo keeps
+    // its historical 2 MB; a libretro core is sized from retro_serialize_size()
+    // (Beetle PSX needs ~5 MB). Values are clamped to 1..64 MB and are reset to
+    // the FBNeo default automatically for any 4-byte (uint32) input session.
+    static void set_state_capacity_bytes(unsigned int bytes);
+    static unsigned int state_capacity_bytes();
     // n02-style shared transport: adopt an already-bound UDP socket (the
     // lobby's anchor) for the next lobby session instead of binding our own.
     // The socket is borrowed, never closed by us; close_session clears the

@@ -41,6 +41,32 @@ typedef void (*CoreFbneoStopCallback)(void* user);
 void CoreSetFbneoFrameCallback(CoreFbneoFrameCallback callback, void* user);
 void CoreSetFbneoStopCallback(CoreFbneoStopCallback callback, void* user);
 
+// PlayStation (libretro) session queries/input. CoreIsLibretroSessionActive()
+// reports whether the current session is driven by a libretro core. PS1 input
+// packets are 12 bytes per player, see LibretroRuntime.hpp for the layout.
+bool CoreIsLibretroSessionActive(void);
+
+// Content file the libretro runtime has loaded (.cue/.chd/...). Empty when no
+// libretro session is running. Used for save-state naming, which has no
+// mupen64plus ROM header to draw the game identity from.
+std::filesystem::path CoreGetLibretroContentPath(void);
+
+// Copies `bytes` (LibretroRuntime's InputBytesPerPlayer(), i.e. 12) worth of pad
+// state for 0-based `playerIndex`. No-op outside a libretro session.
+void CoreSetPsxLocalInput(int playerIndex, const void* bytes, int size);
+
+// Resolves what CoreStartEmulation() would use for PS1 content, so the frontend
+// (file dialogs / rom browser) can accept the same files without starting a
+// session. Returns the core name or an empty string when none is installed.
+std::string CoreGetPsxCoreName(void);
+
+// PS1 disc detection for the rom browser. Returns true when `file` is a content
+// file the libretro PS1 runtime can load (.cue/.chd/.pbp/.m3u, or a .bin named
+// by a sibling .cue), filling `gameName` (file stem, used as the display name
+// in the browser and the lobby) and `contentId` (peer-shared id the lobby uses
+// to match rooms).
+bool CoreGetPsxRomInfo(const std::filesystem::path& file, std::string& gameName, std::string& contentId);
+
 // FBNeo live input. playerIndex is 0-based. The mask bit order matches the
 // names returned by CoreGetFbneoPlayerInputName (bit b == input b). These are
 // safe to call from any thread and are no-ops outside an FBNeo session.

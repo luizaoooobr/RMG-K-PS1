@@ -36,6 +36,7 @@ set(RMG_CORE_SOURCES
     SaveState.cpp
     RollbackNetcode.cpp
     FbneoRuntime.cpp
+    LibretroRuntime.cpp
     rmgk_gekko.cpp
     Callback.cpp
     Settings.cpp

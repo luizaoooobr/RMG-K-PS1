@@ -36,10 +36,11 @@ CORE_EXPORT bool CoreGetVideoSize(int& width, int& height)
     m64p_error ret;
     int size = 0;
 
-    // Arcade (FBNeo) sessions don't run the mupen64plus core, so the command
-    // below always fails with INVALID_STATE. The presenter owns the frame size;
-    // return silently instead of latching a bogus error into CoreGetError().
-    if (CoreIsFbneoSessionActive())
+    // Arcade (FBNeo) / PlayStation (libretro) sessions don't run the mupen64plus
+    // core, so the command below always fails with INVALID_STATE. The presenter
+    // owns the frame size; return silently instead of latching a bogus error
+    // into CoreGetError().
+    if (CoreIsFbneoSessionActive() || CoreIsLibretroSessionActive())
     {
         return false;
     }
@@ -70,11 +71,11 @@ CORE_EXPORT bool CoreSetVideoSize(int width, int height)
     m64p_error ret;
     int size;
 
-    // Arcade (FBNeo) sessions don't run the mupen64plus core. Report success so
-    // the render-widget resize timer stops (it retries until success) and so no
-    // bogus INVALID_STATE error is latched into CoreGetError(). The presenter
-    // handles its own sizing.
-    if (CoreIsFbneoSessionActive())
+    // Arcade (FBNeo) / PlayStation (libretro) sessions don't run the mupen64plus
+    // core. Report success so the render-widget resize timer stops (it retries
+    // until success) and so no bogus INVALID_STATE error is latched into
+    // CoreGetError(). The presenter handles its own sizing.
+    if (CoreIsFbneoSessionActive() || CoreIsLibretroSessionActive())
     {
         return true;
     }

@@ -150,6 +150,8 @@
     <addaction name="action_Settings_Input"/>
     <addaction name="separator"/>
     <addaction name="menuArcade"/>
+    <addaction name="action_Psx_Input"/>
+    <addaction name="action_Psx_Input"/>
    </widget>
    <widget class="QMenu" name="menuSettings">
     <property name="title">
@@ -471,6 +473,14 @@
    <property name="text">
     <string>&amp;Map Game Inputs...</string>
    </property>
+  </action>
+  <action name="action_Psx_Input">
+    <property name="icon">
+     <iconset theme="gamepad-line"/>
+    </property>
+    <property name="text">
+     <string>&amp;PlayStation Input...</string>
+    </property>
   </action>
   <action name="action_Arcade_Dip">
    <property name="icon">

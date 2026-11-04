@@ -74,6 +74,7 @@ set(RMG_SOURCES
     UserInterface/Dialog/UnifiedInputDialog.cpp
     UserInterface/Dialog/Arcade/ArcadeInputDialog.cpp
     UserInterface/Dialog/Arcade/ArcadeDipDialog.cpp
+    UserInterface/Dialog/Psx/PsxInputDialog.cpp
     UserInterface/Dialog/RomInfoDialog.cpp
     UserInterface/Dialog/RomInfoDialog.ui
     UserInterface/Dialog/GameSelectDialog.cpp

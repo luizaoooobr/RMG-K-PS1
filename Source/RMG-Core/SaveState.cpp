@@ -16,6 +16,8 @@
 #include "Library.hpp"
 #include "Error.hpp"
 #include "FbneoRuntime.hpp"
+#include "LibretroRuntime.hpp"
+#include "Emulation.hpp"
 
 #include "m64p/Api.hpp"
 
@@ -34,6 +36,9 @@ static bool l_HasRollbackState = false;
 // Save-state slot used by arcade (FBNeo) sessions. There is no mupen64plus core
 // to track a slot for them, so it is kept here.
 static int l_FbneoSaveStateSlot = 0;
+
+// Same for PlayStation (libretro) sessions.
+static int l_LibretroSaveStateSlot = 0;
 
 //
 // Local Functions
@@ -79,6 +84,41 @@ static bool fbneo_save_state_path(int slot, std::filesystem::path& path)
     return true;
 }
 
+// Path used for PlayStation (libretro) quick save states: <savestate dir>/<stem>.psx.st<slot>.
+// Content identity comes from the loaded .cue/.chd/.pbp/.m3u path.
+static bool libretro_save_state_path(int slot, std::filesystem::path& path)
+{
+    if (!libretro_rt::IsInitialized())
+    {
+        return false;
+    }
+
+    const std::filesystem::path content = CoreGetLibretroContentPath();
+    std::string stem;
+    if (content.empty())
+    {
+        stem = libretro_rt::GameId();
+    }
+    else
+    {
+        stem = content.stem().string();
+    }
+    if (stem.empty())
+    {
+        return false;
+    }
+
+    std::string fileName = stem;
+    str_replace_chars(fileName, ":<>\"/\\|?*", '_');
+    fileName += ".psx.st";
+    fileName += std::to_string(slot);
+
+    path = CoreGetSaveStateDirectory();
+    path += CORE_DIR_SEPERATOR_STR;
+    path += fileName;
+    return true;
+}
+
 static bool fbneo_write_state(const std::filesystem::path& path)
 {
     unsigned char* buffer = nullptr;
@@ -88,6 +128,42 @@ static bool fbneo_write_state(const std::filesystem::path& path)
     if (!fbneo_rt::SaveStateAlloc(buffer, len, checksum, 0) || buffer == nullptr || len <= 0)
     {
         CoreSetError("CoreSaveState: FBNeo state serialization failed");
+        return false;
+    }
+
+    std::error_code ec;
+    std::filesystem::create_directories(path.parent_path(), ec);
+
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out)
+    {
+        std::free(buffer);
+        CoreSetError("CoreSaveState: couldn't open \"" + path.string() + "\" for writing");
+        return false;
+    }
+
+    out.write(reinterpret_cast<const char*>(buffer), static_cast<std::streamsize>(len));
+    const bool ok = out.good();
+    out.close();
+    std::free(buffer);
+
+    if (!ok)
+    {
+        CoreSetError("CoreSaveState: failed to write \"" + path.string() + "\"");
+    }
+
+    return ok;
+}
+
+static bool libretro_write_state(const std::filesystem::path& path)
+{
+    unsigned char* buffer = nullptr;
+    int len = 0;
+    int checksum = 0;
+
+    if (!libretro_rt::SaveStateAlloc(buffer, len, checksum, 0) || buffer == nullptr || len <= 0)
+    {
+        CoreSetError("CoreSaveState: PS1 state serialization failed");
         return false;
     }
 
@@ -141,6 +217,32 @@ static bool fbneo_read_state(const std::filesystem::path& path)
     return true;
 }
 
+static bool libretro_read_state(const std::filesystem::path& path)
+{
+    std::ifstream in(path, std::ios::binary);
+    if (!in)
+    {
+        CoreSetError("CoreLoadSaveState: couldn't open \"" + path.string() + "\"");
+        return false;
+    }
+
+    std::vector<unsigned char> buffer((std::istreambuf_iterator<char>(in)),
+                                      std::istreambuf_iterator<char>());
+    if (buffer.empty())
+    {
+        CoreSetError("CoreLoadSaveState: save state file is empty");
+        return false;
+    }
+
+    if (!libretro_rt::LoadState(buffer.data(), static_cast<int>(buffer.size())))
+    {
+        CoreSetError("CoreLoadSaveState: PS1 state deserialization failed");
+        return false;
+    }
+
+    return true;
+}
+
 //
 // Exported Functions
 //
@@ -153,6 +255,12 @@ CORE_EXPORT bool CoreSetSaveStateSlot(int slot)
     if (fbneo_rt::IsInitialized())
     {
         l_FbneoSaveStateSlot = slot;
+        return true;
+    }
+
+    if (libretro_rt::IsInitialized())
+    {
+        l_LibretroSaveStateSlot = slot;
         return true;
     }
 
@@ -183,6 +291,11 @@ CORE_EXPORT int CoreGetSaveStateSlot(void)
         return l_FbneoSaveStateSlot;
     }
 
+    if (libretro_rt::IsInitialized())
+    {
+        return l_LibretroSaveStateSlot;
+    }
+
     if (!m64p::Core.IsHooked())
     {
         return -1;
@@ -204,7 +317,7 @@ CORE_EXPORT bool CoreIncreaseSaveStateSlot(void)
     std::string error;
     int slot;
 
-    if (!m64p::Core.IsHooked() && !fbneo_rt::IsInitialized())
+    if (!m64p::Core.IsHooked() && !fbneo_rt::IsInitialized() && !libretro_rt::IsInitialized())
     {
         return false;
     }
@@ -225,7 +338,7 @@ CORE_EXPORT bool CoreDecreaseSaveStateSlot(void)
     std::string error;
     int slot;
 
-    if (!m64p::Core.IsHooked() && !fbneo_rt::IsInitialized())
+    if (!m64p::Core.IsHooked() && !fbneo_rt::IsInitialized() && !libretro_rt::IsInitialized())
     {
         return false;
     }
@@ -323,6 +436,11 @@ CORE_EXPORT bool CoreGetSaveStatePath(int slot, std::filesystem::path& path)
         return fbneo_save_state_path(slot, path);
     }
 
+    if (libretro_rt::IsInitialized())
+    {
+        return libretro_save_state_path(slot, path);
+    }
+
     CoreRomHeader romHeader;
     CoreRomSettings romSettings;
 
@@ -353,6 +471,17 @@ CORE_EXPORT bool CoreSaveState(void)
         return fbneo_write_state(path);
     }
 
+    if (libretro_rt::IsInitialized())
+    {
+        std::filesystem::path path;
+        if (!libretro_save_state_path(CoreGetSaveStateSlot(), path))
+        {
+            CoreSetError("CoreSaveState: couldn't resolve the PS1 save state path");
+            return false;
+        }
+        return libretro_write_state(path);
+    }
+
     if (!m64p::Core.IsHooked())
     {
         return false;
@@ -377,6 +506,11 @@ CORE_EXPORT bool CoreSaveState(std::filesystem::path file, CoreSaveStateType typ
     if (fbneo_rt::IsInitialized())
     {
         return fbneo_write_state(file);
+    }
+
+    if (libretro_rt::IsInitialized())
+    {
+        return libretro_write_state(file);
     }
 
     if (!m64p::Core.IsHooked())
@@ -411,6 +545,17 @@ CORE_EXPORT bool CoreLoadSaveState(void)
         return fbneo_read_state(path);
     }
 
+    if (libretro_rt::IsInitialized())
+    {
+        std::filesystem::path path;
+        if (!libretro_save_state_path(CoreGetSaveStateSlot(), path))
+        {
+            CoreSetError("CoreLoadSaveState: PS1 save state path unavailable");
+            return false;
+        }
+        return libretro_read_state(path);
+    }
+
     if (!m64p::Core.IsHooked())
     {
         return false;
@@ -435,6 +580,11 @@ CORE_EXPORT bool CoreLoadSaveState(std::filesystem::path file)
     if (fbneo_rt::IsInitialized())
     {
         return fbneo_read_state(file);
+    }
+
+    if (libretro_rt::IsInitialized())
+    {
+        return libretro_read_state(file);
     }
 
     if (!m64p::Core.IsHooked())

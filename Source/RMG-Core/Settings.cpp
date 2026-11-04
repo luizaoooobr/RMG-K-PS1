@@ -1851,8 +1851,9 @@ static bool config_option_get(const std::string& section, const std::string& key
 
     if (!config_section_exists(section))
     {
-        error = "config_option_get Failed: cannot open non-existent section!";
-        CoreSetError(error);
+        // Section doesn't exist (e.g. per-game settings for a ROM that has none,
+        // such as PlayStation discs which bypass mupen64plus). This is expected
+        // and not an error: callers fall back to their default value.
         return false;
     }
 
@@ -1864,6 +1865,13 @@ static bool config_option_get(const std::string& section, const std::string& key
     ret = m64p::Config.GetParameter(l_sectionHandle, key.c_str(), type, value, size);
     if (ret != M64ERR_SUCCESS)
     {
+        // A missing parameter in an existing section is normal for ROMs that
+        // have no per-game overrides (e.g. PlayStation discs): callers fall
+        // back to their default value. Don't latch an error in that case.
+        if (ret == M64ERR_INPUT_NOT_FOUND)
+        {
+            return false;
+        }
         error = "config_option_get m64p::Config.GetParameter Failed: ";
         error += m64p::Core.ErrorMessage(ret);
         CoreSetError(error);

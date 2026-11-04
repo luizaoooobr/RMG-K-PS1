@@ -35,10 +35,18 @@ CORE_EXPORT bool CoreGetCurrentRomSettings(CoreRomSettings& settings)
     m64p_error        ret;
     m64p_rom_settings m64p_settings;
 
-    // Arcade (FBNeo) sessions have no mupen64plus ROM open, so the command below
-    // would fail with INVALID_STATE. Return silently (no error latched) -- there
-    // genuinely are no mupen ROM settings for an arcade game.
-    if (CoreIsFbneoSessionActive())
+    // Arcade (FBNeo) / PlayStation (libretro) sessions have no mupen64plus ROM
+    // open, so the command below would fail with INVALID_STATE. Return silently
+    // (no error latched) -- there genuinely are no mupen ROM settings for them.
+    if (CoreIsFbneoSessionActive() || CoreIsLibretroSessionActive())
+    {
+        return false;
+    }
+
+    // Before an emulation session starts (e.g. during lobby pre-match sync for
+    // PlayStation discs) no mupen64plus ROM is open, so the command below would
+    // fail with INVALID_STATE. Return silently in that case too.
+    if (!CoreHasRomOpen())
     {
         return false;
     }

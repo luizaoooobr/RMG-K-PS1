@@ -70,6 +70,13 @@ void RomSearcherThread::searchDirectory(QString directory)
     filter << "*.D64";
     filter << "*.ZIP";
     filter << "*.7Z";
+    // PlayStation discs are played by the bundled libretro core, so list the
+    // descriptor formats the core can load (a bare .bin is only accepted when a
+    // sibling .cue names it, see libretro_rt::IsMediaFile).
+    filter << "*.CUE";
+    filter << "*.CHD";
+    filter << "*.PBP";
+    filter << "*.M3U";
 
     QDirIterator::IteratorFlag flag = this->recursive ? 
         QDirIterator::Subdirectories : 
@@ -136,6 +143,32 @@ void RomSearcherThread::searchDirectory(QString directory)
                     arcadeHeader,
                     arcadeSettings
                 });
+            }
+            else
+            {
+                // Not an N64 rom or an arcade set: it may be a PlayStation disc
+                // played by the libretro core. Those have no header either, so
+                // synthesize one from the file name and tag it as PlayStation.
+                std::string psxName;
+                std::string psxId;
+                if (CoreGetPsxRomInfo(file.toStdU32String(), psxName, psxId))
+                {
+                    CoreRomHeader   psxHeader   = {};
+                    CoreRomSettings psxSettings = {};
+                    psxHeader.Name       = psxName;
+                    psxHeader.GameID     = psxName;
+                    psxSettings.GoodName = psxName;
+                    // The lobby keys rooms and local-rom lookups on this field.
+                    psxSettings.MD5      = psxId;
+
+                    data.push_back(
+                    {
+                        file,
+                        CoreRomType::PlayStation,
+                        psxHeader,
+                        psxSettings
+                    });
+                }
             }
         }
 

@@ -17,6 +17,7 @@
 #include "Cheats.hpp"
 #include "Error.hpp"
 #include "Emulation.hpp"
+#include "LibretroRuntime.hpp"
 
 #include "m64p/Api.hpp"
 
@@ -660,6 +661,14 @@ CORE_EXPORT bool CoreGetCurrentCheats(std::filesystem::path file, std::vector<Co
             cheats.clear();
             return true;
         }
+    }
+
+    // PlayStation discs carry no N64 cheat files. Report "no cheats" so netplay's
+    // pre-match cheat manifest sync succeeds instead of aborting the match.
+    if (!file.empty() && libretro_rt::IsMediaFile(file.string().c_str()))
+    {
+        cheats.clear();
+        return true;
     }
 
     if (!get_romheader_and_romsettings(file, romHeader, romSettings))

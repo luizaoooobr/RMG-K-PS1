@@ -392,9 +392,11 @@ QMap<QString, CoreRomSettings> RomBrowserWidget::GetModelData(void)
     for (int i = 0; i < model.first->rowCount(); i++)
     {
         modelData = model.first->item(i)->data().value<RomBrowserModelData>();
-        // only add cartridges and arcade sets, 64dd disks aren't supported
+        // only add cartridges, arcade sets and PlayStation discs, 64dd disks
+        // aren't supported
         if (modelData.type == CoreRomType::Cartridge ||
-            modelData.type == CoreRomType::Arcade)
+            modelData.type == CoreRomType::Arcade ||
+            modelData.type == CoreRomType::PlayStation)
         {
             data.insert(modelData.file, modelData.settings);
         }
@@ -417,9 +419,11 @@ QList<RomBrowserModelData> RomBrowserWidget::GetModelDataList(void)
     for (int i = 0; i < model.first->rowCount(); i++)
     {
         modelData = model.first->item(i)->data().value<RomBrowserModelData>();
-        // only add cartridges and arcade sets, 64dd disks aren't supported
+        // only add cartridges, arcade sets and PlayStation discs, 64dd disks
+        // aren't supported
         if (modelData.type == CoreRomType::Cartridge ||
-            modelData.type == CoreRomType::Arcade)
+            modelData.type == CoreRomType::Arcade ||
+            modelData.type == CoreRomType::PlayStation)
         {
             data.append(modelData);
         }
@@ -533,6 +537,10 @@ void RomBrowserWidget::addRomData(QString file, CoreRomType type, CoreRomHeader 
     else if (type == CoreRomType::Arcade)
     {
         gameFormat = "Arcade";
+    }
+    else if (type == CoreRomType::PlayStation)
+    {
+        gameFormat = "PlayStation";
     }
     else
     {
@@ -708,7 +716,8 @@ void RomBrowserWidget::customContextMenuRequested(QPoint position)
 
     this->action_PlayGame->setEnabled(hasSelection);
     this->action_PlayGameWith->setEnabled(hasSelection);
-    this->action_PlayGameWith->setVisible(!showPlayWithDiskMenu);
+    this->action_PlayGameWith->setVisible(!showPlayWithDiskMenu &&
+        data.type != CoreRomType::PlayStation);
     this->menu_PlayGameWithDisk->menuAction()->setVisible(showPlayWithDiskMenu);
     this->menu_PlayGameWithSlot->menuAction()->setEnabled(hasSelection);
     this->action_RomInformation->setEnabled(hasSelection);

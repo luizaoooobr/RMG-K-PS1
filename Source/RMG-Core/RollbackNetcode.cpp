@@ -5,13 +5,91 @@
  *  This program is free software: you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License version 3.
  *  You should have received a copy of the GNU General Public License
- *  along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ *  along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
 #define CORE_INTERNAL
 #include "RollbackNetcode.hpp"
 #include "Error.hpp"
 #include "Library.hpp"
 #include "FbneoRuntime.hpp"
+#include "LibretroRuntime.hpp"
+
+namespace
+{
+// FBNeo is the default so N64/arcade sessions keep the exact behaviour they had
+// before the libretro runtime existed.
+CoreRollbackCore g_core = CoreRollbackCore::Fbneo;
+
+bool runtime_initialized()
+{
+    switch (g_core)
+    {
+        case CoreRollbackCore::Libretro:
+            return libretro_rt::IsInitialized();
+        case CoreRollbackCore::Fbneo:
+        default:
+            return fbneo_rt::IsInitialized();
+    }
+}
+
+bool runtime_save_state(unsigned char* buffer, int capacity, int& len, int& checksum, int frame)
+{
+    switch (g_core)
+    {
+        case CoreRollbackCore::Libretro:
+            return libretro_rt::SaveStateInto(buffer, capacity, len, checksum, frame);
+        case CoreRollbackCore::Fbneo:
+        default:
+            return fbneo_rt::SaveStateInto(buffer, capacity, len, checksum, frame);
+    }
+}
+
+bool runtime_save_state_alloc(unsigned char*& buffer, int& len, int& checksum, int frame)
+{
+    switch (g_core)
+    {
+        case CoreRollbackCore::Libretro:
+            return libretro_rt::SaveStateAlloc(buffer, len, checksum, frame);
+        case CoreRollbackCore::Fbneo:
+        default:
+            return fbneo_rt::SaveStateAlloc(buffer, len, checksum, frame);
+    }
+}
+
+bool runtime_load_state(const unsigned char* buffer, int len)
+{
+    switch (g_core)
+    {
+        case CoreRollbackCore::Libretro:
+            return libretro_rt::LoadState(buffer, len);
+        case CoreRollbackCore::Fbneo:
+        default:
+            return fbneo_rt::LoadState(buffer, len);
+    }
+}
+
+bool runtime_run_frame(int flags)
+{
+    switch (g_core)
+    {
+        case CoreRollbackCore::Libretro:
+            return libretro_rt::RunFrame(flags);
+        case CoreRollbackCore::Fbneo:
+        default:
+            return fbneo_rt::RunFrame(flags);
+    }
+}
+} // namespace
+
+void CoreRollbackSetCore(CoreRollbackCore core)
+{
+    g_core = core;
+}
+
+CoreRollbackCore CoreRollbackGetCore(void)
+{
+    return g_core;
+}
 
 bool CoreRollbackSaveGameState(CoreRollbackState& state, int frame)
 {
@@ -22,7 +100,7 @@ bool CoreRollbackSaveGameStateInto(CoreRollbackState& state, unsigned char* buff
 {
     std::string error;
 
-    if (!fbneo_rt::IsInitialized())
+    if (!runtime_initialized())
     {
         return false;
     }
@@ -31,9 +109,9 @@ bool CoreRollbackSaveGameStateInto(CoreRollbackState& state, unsigned char* buff
     {
         int len = 0;
         int checksum = 0;
-        if (!fbneo_rt::SaveStateInto(buffer, capacity, len, checksum, frame))
+        if (!runtime_save_state(buffer, capacity, len, checksum, frame))
         {
-            error = "CoreRollbackSaveGameStateInto fbneo_rt::SaveStateInto Failed";
+            error = "CoreRollbackSaveGameStateInto runtime SaveStateInto Failed";
             CoreSetError(error);
             return false;
         }
@@ -48,9 +126,9 @@ bool CoreRollbackSaveGameStateInto(CoreRollbackState& state, unsigned char* buff
         unsigned char* allocBuf = nullptr;
         int len = 0;
         int checksum = 0;
-        if (!fbneo_rt::SaveStateAlloc(allocBuf, len, checksum, frame))
+        if (!runtime_save_state_alloc(allocBuf, len, checksum, frame))
         {
-            error = "CoreRollbackSaveGameStateInto fbneo_rt::SaveStateAlloc Failed";
+            error = "CoreRollbackSaveGameStateInto runtime SaveStateAlloc Failed";
             CoreSetError(error);
             return false;
         }
@@ -64,9 +142,11 @@ bool CoreRollbackSaveGameStateInto(CoreRollbackState& state, unsigned char* buff
 
 bool CoreRollbackSaveFullStateInto(CoreRollbackState& state, unsigned char* buffer, int capacity, int frame)
 {
+    // Both runtimes expose one complete, self-contained serializer state: the
+    // stripped/full distinction only exists for FBNeo's BurnStateCompress.
     std::string error;
 
-    if (!fbneo_rt::IsInitialized())
+    if (!runtime_initialized())
     {
         return false;
     }
@@ -75,9 +155,9 @@ bool CoreRollbackSaveFullStateInto(CoreRollbackState& state, unsigned char* buff
     {
         int len = 0;
         int checksum = 0;
-        if (!fbneo_rt::SaveStateInto(buffer, capacity, len, checksum, frame))
+        if (!runtime_save_state(buffer, capacity, len, checksum, frame))
         {
-            error = "CoreRollbackSaveFullStateInto fbneo_rt::SaveStateInto Failed";
+            error = "CoreRollbackSaveFullStateInto runtime SaveStateInto Failed";
             CoreSetError(error);
             return false;
         }
@@ -92,9 +172,9 @@ bool CoreRollbackSaveFullStateInto(CoreRollbackState& state, unsigned char* buff
         unsigned char* allocBuf = nullptr;
         int len = 0;
         int checksum = 0;
-        if (!fbneo_rt::SaveStateAlloc(allocBuf, len, checksum, frame))
+        if (!runtime_save_state_alloc(allocBuf, len, checksum, frame))
         {
-            error = "CoreRollbackSaveFullStateInto fbneo_rt::SaveStateAlloc Failed";
+            error = "CoreRollbackSaveFullStateInto runtime SaveStateAlloc Failed";
             CoreSetError(error);
             return false;
         }
@@ -110,14 +190,14 @@ bool CoreRollbackLoadGameState(const CoreRollbackState& state)
 {
     std::string error;
 
-    if (!fbneo_rt::IsInitialized())
+    if (!runtime_initialized())
     {
         return false;
     }
 
-    if (!fbneo_rt::LoadState(state.buffer, state.len))
+    if (!runtime_load_state(state.buffer, state.len))
     {
-        error = "CoreRollbackLoadGameState fbneo_rt::LoadState Failed";
+        error = "CoreRollbackLoadGameState runtime LoadState Failed";
         CoreSetError(error);
         return false;
     }
@@ -127,16 +207,18 @@ bool CoreRollbackLoadGameState(const CoreRollbackState& state)
 
 bool CoreRollbackLoadGameStateDeferred(const CoreRollbackState& state)
 {
+    // The libretro runtime has no deferred load: retro_unserialize is synchronous
+    // and frame-aligned, which is exactly what the rollback layer needs.
     std::string error;
 
-    if (!fbneo_rt::IsInitialized())
+    if (!runtime_initialized())
     {
         return false;
     }
 
-    if (!fbneo_rt::LoadState(state.buffer, state.len))
+    if (!runtime_load_state(state.buffer, state.len))
     {
-        error = "CoreRollbackLoadGameStateDeferred fbneo_rt::LoadState Failed";
+        error = "CoreRollbackLoadGameStateDeferred runtime LoadState Failed";
         CoreSetError(error);
         return false;
     }
@@ -156,21 +238,25 @@ void CoreRollbackFreeGameState(CoreRollbackState& state)
 
 bool CoreRollbackAdvanceFrame(void)
 {
-    return fbneo_rt::RunFrame(fbneo_rt::Output_None);
+    return runtime_run_frame(0);
 }
 
 bool CoreRollbackSampleInput(void* values, int size, int players)
 {
     std::string error;
 
-    if (!fbneo_rt::IsInitialized())
+    if (!runtime_initialized())
     {
         return false;
     }
 
-    if (!fbneo_rt::SampleInput(values, size, players))
+    const bool ok = (g_core == CoreRollbackCore::Libretro)
+        ? libretro_rt::SampleInput(values, size, players)
+        : fbneo_rt::SampleInput(values, size, players);
+
+    if (!ok)
     {
-        error = "CoreRollbackSampleInput fbneo_rt::SampleInput Failed";
+        error = "CoreRollbackSampleInput runtime SampleInput Failed";
         CoreSetError(error);
         return false;
     }
@@ -180,92 +266,132 @@ bool CoreRollbackSampleInput(void* values, int size, int players)
 
 bool CoreRollbackSetInputCallback(CoreRollbackInputCallback callback)
 {
-    if (!fbneo_rt::IsInitialized())
+    if (!runtime_initialized())
     {
         return false;
     }
 
-    fbneo_rt::SetInputCallback(callback);
+    if (g_core == CoreRollbackCore::Libretro)
+    {
+        libretro_rt::SetInputCallback(callback);
+    }
+    else
+    {
+        fbneo_rt::SetInputCallback(callback);
+    }
     return true;
 }
 
 bool CoreRollbackSetInputPlayers(int players)
 {
-    if (!fbneo_rt::IsInitialized())
+    if (!runtime_initialized())
     {
         return false;
     }
 
-    fbneo_rt::SetInputPlayers(players);
+    if (g_core == CoreRollbackCore::Libretro)
+    {
+        libretro_rt::SetInputPlayers(players);
+    }
+    else
+    {
+        fbneo_rt::SetInputPlayers(players);
+    }
     return true;
 }
 
 bool CoreRollbackSetDeterministic(bool enabled)
 {
-    // Determinism is a property of the FBNeo runtime itself; this only records
-    // the request and is safe to call before fbneo_rt::Initialize(). Requiring
-    // an initialized driver here made every fresh session (local or netplay)
-    // fail its startup check.
-    fbneo_rt::SetDeterministic(enabled);
+    // Determinism is a property of the runtime itself; this only records the
+    // request and is safe to call before initialization. Requiring an
+    // initialized core here made every fresh session (local or netplay) fail
+    // its startup check.
+    if (g_core == CoreRollbackCore::Libretro)
+    {
+        libretro_rt::SetNetgameMode(enabled);
+    }
+    else
+    {
+        fbneo_rt::SetDeterministic(enabled);
+    }
     return true;
 }
 
 bool CoreRollbackSetVerboseStats(bool enabled)
 {
-    if (!fbneo_rt::IsInitialized())
+    if (!runtime_initialized())
     {
         return false;
     }
 
-    fbneo_rt::SetVerboseStats(enabled);
+    if (g_core == CoreRollbackCore::Fbneo)
+    {
+        fbneo_rt::SetVerboseStats(enabled);
+    }
     return true;
 }
 
 bool CoreRollbackSetTimesyncScale(double scale)
 {
-    if (!fbneo_rt::IsInitialized())
+    if (!runtime_initialized())
     {
         return false;
     }
 
-    fbneo_rt::SetTimesyncScale(scale);
+    if (g_core == CoreRollbackCore::Fbneo)
+    {
+        fbneo_rt::SetTimesyncScale(scale);
+    }
     return true;
 }
 
 bool CoreRollbackExecute(m64p_rollback_execute_callbacks& callbacks)
 {
-    if (!fbneo_rt::IsInitialized())
+    if (!runtime_initialized())
     {
         return false;
     }
 
+    if (g_core == CoreRollbackCore::Libretro)
+    {
+        return libretro_rt::Execute(callbacks);
+    }
     return fbneo_rt::Execute(callbacks);
 }
 
 bool CoreRollbackRunFrame(int flags)
 {
-    if (!fbneo_rt::IsInitialized())
+    if (!runtime_initialized())
     {
         return false;
     }
 
-    return fbneo_rt::RunFrame(flags);
+    return runtime_run_frame(flags);
 }
 
 bool CoreRollbackGetRunFrameStats(CoreRollbackRunFrameStats& stats)
 {
-    std::string error;
-
-    if (!fbneo_rt::IsInitialized())
+    if (!runtime_initialized())
     {
         return false;
     }
 
     m64p_rollback_run_frame_stats coreStats = {};
+
+    if (g_core == CoreRollbackCore::Libretro)
+    {
+        // The libretro runtime only reports whole-frame time; the mupen64plus
+        // dynarec/interrupt counters have no libretro counterpart.
+        libretro_rt::GetRunFrameStats(coreStats);
+        stats = {};
+        stats.totalUs = coreStats.total_us;
+        stats.outputFlags = coreStats.output_flags;
+        return true;
+    }
+
     fbneo_rt::GetRunFrameStats(coreStats);
 
-    stats.totalUs = coreStats.total_us;
-    stats.r4300Us = coreStats.r4300_us;
+    stats.totalUs = coreStats.total_us;    stats.r4300Us = coreStats.r4300_us;
     stats.viUs = coreStats.vi_us;
     stats.newFrameUs = coreStats.new_frame_us;
     stats.cheatsUs = coreStats.cheats_us;

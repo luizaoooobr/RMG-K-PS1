@@ -137,6 +137,20 @@ struct CoreRollbackRunFrameStats
 
 using CoreRollbackInputCallback = int (*)(void* values, int size, int players);
 
+// Which emulator runtime the rollback surface drives. Defaults to FBNeo, so
+// every existing arcade/N64 path keeps its behaviour unless a session
+// explicitly selects the libretro runtime.
+enum class CoreRollbackCore
+{
+    Fbneo = 0,
+    Libretro = 1,
+};
+
+// Selects the runtime used by every CoreRollback* call below. Set it once,
+// before the core is initialized, then leave it alone for the session.
+void CoreRollbackSetCore(CoreRollbackCore core);
+CoreRollbackCore CoreRollbackGetCore(void);
+
 bool CoreRollbackSaveGameState(CoreRollbackState& state, int frame);
 bool CoreRollbackSaveGameStateInto(CoreRollbackState& state, unsigned char* buffer, int capacity, int frame);
 // Like CoreRollbackSaveGameStateInto but produces a FULL normal-format savestate (TLB LUT

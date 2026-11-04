@@ -52,6 +52,11 @@
          <string>Arcade sets</string>
         </property>
        </item>
+       <item>
+        <property name="text">
+         <string>PlayStation</string>
+        </property>
+       </item>
       </widget>
      </item>
      <item>

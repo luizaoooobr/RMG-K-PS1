@@ -331,6 +331,7 @@ class MainWindow : public QMainWindow, private Ui::MainWindow
     void on_Action_Settings_Plugins(void);
 
     void on_Action_Arcade_Input(void);
+    void on_Action_Psx_Input(void);
     void on_Action_Arcade_Dip(void);
 
     void on_Action_View_Toolbar(bool checked);
