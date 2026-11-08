@@ -3992,10 +3992,9 @@ void RollbackLobbyDialog::notifyEmulationFinished()
     // The passer must not report MATCH_FINISHED: the host ends the match
     // (reportMatchFinished) so the server doesn't drop the passer from the
     // room. Clearing m_iAmPasser here so the next match starts clean.
-    const bool shouldReport = m_hostReportPending || !m_iAmPasser;
+    const bool suppressReport = m_iAmPasser;
     m_iAmPasser = false;
-    m_hostReportPending = false;
-    if (matchId != 0 && shouldReport)
+    if (matchId != 0 && !suppressReport)
         m_client->reportMatchFinished(matchId);
     m_currentMatchId = 0;
     emit liveReplayViewerCountCleared();
@@ -4116,9 +4115,13 @@ bool RollbackLobbyDialog::requestPassTurn()
     if (rotationIsHost())
     {
         beginRotationForUser(selfId);
-        // Defer the MATCH_FINISHED report to notifyEmulationFinished so it
-        // happens after emulation stops (avoids early-drop on the server).
-        m_hostReportPending = true;
+        // Host ends the match (reportMatchFinished) so the server transitions
+        // to waiting; peers suppress their own report to avoid being dropped.
+        if (m_currentMatchId != 0)
+        {
+            m_client->reportMatchFinished(m_currentMatchId);
+            m_currentMatchId = 0;
+        }
     }
     // Passer parks so the window doesn't close abruptly; released when the
     // next match starts.
@@ -4194,16 +4197,19 @@ bool RollbackLobbyDialog::requestPassTurnForSlot(int slot)
 
     beginRotationForUser(targetUserId);
 
-    // Defer the MATCH_FINISHED report to notifyEmulationFinished so it
-    // happens after emulation stops (avoids early-drop on the server).
-    m_hostReportPending = true;
+    // Host ends the match (reportMatchFinished) so the server transitions to
+    // waiting; peers suppress their own report to avoid being dropped.
+    if (m_currentMatchId != 0)
+    {
+        m_client->reportMatchFinished(m_currentMatchId);
+        m_currentMatchId = 0;
+    }
 
     // The host parks (window stays open) whether or not it is the passer.
-    if (m_emulationActive || m_awaitingEmulationStart)
-    {
-        m_rotationAnnounced = true;
-        emit rotationRestartPending();
-    }
+    // (No m_emulationActive guard: the key press is already gated on an
+    // active match, and the guard was dropping the park on the first pass.)
+    m_rotationAnnounced = true;
+    emit rotationRestartPending();
 
     // The passer stops their own emulation. For a host triggering a pass on
     // someone else, that someone else stops when they receive the marker.
