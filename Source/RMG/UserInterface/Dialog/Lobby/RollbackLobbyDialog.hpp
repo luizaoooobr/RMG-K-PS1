@@ -484,6 +484,10 @@ private:
     // in_game -> waiting transition should park the game window even on clients
     // that don't own the host-side queue.
     bool       m_rotationAnnounced    = false;
+    // True when this client is the passer of the rotation currently in flight.
+    // Used to suppress the early MATCH_FINISHED report (the host ends the match
+    // instead), which previously made the server drop the client from the room.
+    bool       m_iAmPasser           = false;
     QList<quint64> m_rotationDeparting;
     bool       m_rotationSwapping     = false;
     int        m_rotationSwapFailures = 0;
