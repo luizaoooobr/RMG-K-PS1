@@ -5492,8 +5492,10 @@ void MainWindow::on_Lobby_RotationRestartPending(void)
     if (this->ui_LobbyRotationParkTimerId != 0)
         this->killTimer(this->ui_LobbyRotationParkTimerId);
     // Safety net: if the next match never boots (host left, swap rejected,
-    // network hiccup this timer releases the window back to the browser.
-    this->ui_LobbyRotationParkTimerId = this->startTimer(12000);
+    // network hiccup) this timer releases the window back to the browser.
+    // Kept generous (30s) so a slow first boot (e.g. PS1 BIOS) doesn't
+    // abort the transparent restart prematurely.
+    this->ui_LobbyRotationParkTimerId = this->startTimer(30000);
 
     CoreAddCallbackMessage(CoreDebugMessageType::Info,
         "Rotation: keeping the game window parked for the next match");
