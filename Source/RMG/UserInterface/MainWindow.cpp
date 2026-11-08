@@ -2609,6 +2609,7 @@ void MainWindow::launchEmulationThread(QString cartRom, QString diskRom, bool re
             this->killTimer(this->ui_LobbyRotationParkTimerId);
             this->ui_LobbyRotationParkTimerId = 0;
         }
+        OnScreenDisplaySetMessage("");
     }
 
 #ifdef NETPLAY
@@ -3440,7 +3441,8 @@ void MainWindow::timerEvent(QTimerEvent *event)
                 "Rotation: next match did not start in time — returning to the ROM browser");
             if (this->emulationThread == nullptr || !this->emulationThread->isRunning())
             {
-                this->ui_NoSwitchToRomBrowser = false;
+                OnScreenDisplaySetMessage("");
+            this->ui_NoSwitchToRomBrowser = false;
                 this->updateUI(false, false);
             }
         }
@@ -5495,6 +5497,7 @@ void MainWindow::on_Lobby_RotationRestartPending(void)
 
     CoreAddCallbackMessage(CoreDebugMessageType::Info,
         "Rotation: keeping the game window parked for the next match");
+    OnScreenDisplaySetMessage("Next match starting...");
 }
 
 void MainWindow::on_Lobby_RotationRestartAborted(void)
@@ -5514,6 +5517,7 @@ void MainWindow::on_Lobby_RotationRestartAborted(void)
     if (this->emulationThread != nullptr && this->emulationThread->isRunning())
         return;
 
+    OnScreenDisplaySetMessage("");
     this->ui_NoSwitchToRomBrowser = false;
     this->updateUI(false, false);
 }
