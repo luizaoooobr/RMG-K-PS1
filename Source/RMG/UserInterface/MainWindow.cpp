@@ -2390,9 +2390,12 @@ void MainWindow::updateUI(bool inEmulation, bool isPaused)
         }
         else
         {
-            // Rotation handoff: keep a neutral surface instead of flashing the
-            // ROM browser while the room reorders seats and counts down.
-            this->ui_Widgets->setCurrentWidget(this->ui_Widget_Dummy);
+            // Rotation handoff: do NOT switch widgets here. Switching the
+            // render surface during emulation teardown (GL/Vulkan context) has
+            // caused heap corruption (0xc0000374) on the host. Leaving the
+            // last frame on screen is safe; the next match's updateUI(true)
+            // switches to the render widget, and the abort path switches to
+            // the ROM browser.
             return;
         }
     }
