@@ -3352,6 +3352,7 @@ void RollbackLobbyDialog::enterRoom(quint64 roomId, const QString& greetingChatL
     m_rotationPending = false;
     m_rotationAnnounced = false;
     m_iAmPasser = false;
+    m_hostReportPending = false;
     m_rotationDeparting.clear();
     m_rotationSwapping = false;
     m_rotationSwapFailures = 0;
@@ -3991,9 +3992,10 @@ void RollbackLobbyDialog::notifyEmulationFinished()
     // The passer must not report MATCH_FINISHED: the host ends the match
     // (reportMatchFinished) so the server doesn't drop the passer from the
     // room. Clearing m_iAmPasser here so the next match starts clean.
-    const bool suppressReport = m_iAmPasser;
+    const bool shouldReport = m_hostReportPending || !m_iAmPasser;
     m_iAmPasser = false;
-    if (matchId != 0 && !suppressReport)
+    m_hostReportPending = false;
+    if (matchId != 0 && shouldReport)
         m_client->reportMatchFinished(matchId);
     m_currentMatchId = 0;
     emit liveReplayViewerCountCleared();
@@ -4114,13 +4116,9 @@ bool RollbackLobbyDialog::requestPassTurn()
     if (rotationIsHost())
     {
         beginRotationForUser(selfId);
-        // Host ends the match (reportMatchFinished) so peers don't report
-        // early and get dropped from the room.
-        if (m_currentMatchId != 0)
-        {
-            m_client->reportMatchFinished(m_currentMatchId);
-            m_currentMatchId = 0;
-        }
+        // Defer the MATCH_FINISHED report to notifyEmulationFinished so it
+        // happens after emulation stops (avoids early-drop on the server).
+        m_hostReportPending = true;
     }
     // Passer parks so the window doesn't close abruptly; released when the
     // next match starts.
@@ -4196,13 +4194,9 @@ bool RollbackLobbyDialog::requestPassTurnForSlot(int slot)
 
     beginRotationForUser(targetUserId);
 
-    // Host ends the match (reportMatchFinished) so peers don't report early
-    // and get dropped from the room.
-    if (m_currentMatchId != 0)
-    {
-        m_client->reportMatchFinished(m_currentMatchId);
-        m_currentMatchId = 0;
-    }
+    // Defer the MATCH_FINISHED report to notifyEmulationFinished so it
+    // happens after emulation stops (avoids early-drop on the server).
+    m_hostReportPending = true;
 
     // The host parks (window stays open) whether or not it is the passer.
     if (m_emulationActive || m_awaitingEmulationStart)
@@ -4577,6 +4571,7 @@ void RollbackLobbyDialog::cancelRotation(const QString& reason)
     m_rotationPending = false;
     m_rotationAnnounced = false;
     m_iAmPasser = false;
+    m_hostReportPending = false;
     m_rotationDeparting.clear();
     m_rotationSwapping = false;
     m_rotationSwapFailures = 0;
@@ -4922,6 +4917,7 @@ void RollbackLobbyDialog::onRoomLeft(const QString& reason)
     m_rotationPending = false;
     m_rotationAnnounced = false;
     m_iAmPasser = false;
+    m_hostReportPending = false;
     m_rotationDeparting.clear();
     m_rotationSwapping = false;
     m_rotationSwapFailures = 0;
@@ -5653,6 +5649,10 @@ void RollbackLobbyDialog::onMatchBegin(quint64 matchId, const QList<LobbyClient:
 
     m_currentMatchId = matchId;
     m_awaitingEmulationStart = true;
+    // Fresh match: no rotation/pass state carried over from the previous one.
+    m_rotationAnnounced = false;
+    m_iAmPasser = false;
+    m_hostReportPending = false;
     updateRecordingControls();
 
     // Disable start; enable Drop now — MATCH_BEGIN arrives *after* the

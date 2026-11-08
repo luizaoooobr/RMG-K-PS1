@@ -488,6 +488,9 @@ private:
     // Used to suppress the early MATCH_FINISHED report (the host ends the match
     // instead), which previously made the server drop the client from the room.
     bool       m_iAmPasser           = false;
+    // Host-side: a pass was triggered; report MATCH_FINISHED from
+    // notifyEmulationFinished (not earlier) so the server doesn't drop anyone.
+    bool       m_hostReportPending   = false;
     QList<quint64> m_rotationDeparting;
     bool       m_rotationSwapping     = false;
     int        m_rotationSwapFailures = 0;
