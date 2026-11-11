@@ -56,6 +56,7 @@
 #include <QGuiApplication>
 #include <QStyleFactory>
 #include <QActionGroup>
+#include <QToolButton>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QMessageBox>
@@ -2071,6 +2072,19 @@ void MainWindow::configureUI(QApplication* app, bool showUI)
         this->addToolBar(toolbarArea, this->toolBar);
     }
 
+    // Compact toolbar buttons use a short label below the icon.
+    QAction* const toolbarLabeledActions[] = {
+        this->action_Toolbar_ArcadeInput,
+        this->action_Toolbar_PsxInput,
+    };
+    for (QAction* action : toolbarLabeledActions)
+    {
+        if (QToolButton* button = qobject_cast<QToolButton*>(this->toolBar->widgetForAction(action)))
+        {
+            button->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
+        }
+    }
+
     this->ui_StatusBarTimerTimeout = CoreSettingsGetIntValue(SettingsID::GUI_StatusbarMessageDuration);
 
     this->ui_Widgets->addWidget(this->ui_Widget_RomBrowser);
@@ -2898,6 +2912,8 @@ void MainWindow::updateActions(bool inEmulation, bool isPaused)
     this->action_Settings_Input->setEnabled(canConfigureInput);
     this->action_Settings_Input->setShortcut(QKeySequence(keyBinding));
     this->action_Toolbar_Input->setEnabled(canConfigureInput);
+    this->action_Toolbar_ArcadeInput->setEnabled(canConfigureInput);
+    this->action_Toolbar_PsxInput->setEnabled(canConfigureInput);
     keyBinding = QString::fromStdString(CoreSettingsGetStringValue(SettingsID::KeyBinding_Settings));
     this->action_Settings_Settings->setShortcut(QKeySequence(keyBinding));
 
@@ -3265,6 +3281,10 @@ void MainWindow::connectActionSignals(void)
     connect(this->action_Arcade_Dip, &QAction::triggered, this, &MainWindow::on_Action_Arcade_Dip);
     connect(this->action_Arcade_Test, &QAction::triggered, this, &MainWindow::on_Action_Arcade_Test);
     connect(this->action_Toolbar_Input, &QAction::triggered, this, &MainWindow::on_Action_Settings_Input);
+    connect(this->action_Toolbar_ArcadeInput, &QAction::triggered,
+            this, &MainWindow::on_Action_Arcade_Input);
+    connect(this->action_Toolbar_PsxInput, &QAction::triggered,
+            this, &MainWindow::on_Action_Psx_Input);
     connect(this->action_Toolbar_Playback, &QAction::triggered, this, &MainWindow::on_Action_Playback);
 
     connect(this->action_View_Toolbar, &QAction::toggled, this, &MainWindow::on_Action_View_Toolbar);

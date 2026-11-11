@@ -152,7 +152,6 @@
     <addaction name="separator"/>
     <addaction name="menuArcade"/>
     <addaction name="action_Psx_Input"/>
-    <addaction name="action_Psx_Input"/>
    </widget>
    <widget class="QMenu" name="menuSettings">
     <property name="title">
@@ -235,6 +234,8 @@
    <addaction name="action_Settings_Settings"/>
    <addaction name="action_Settings_Plugins"/>
    <addaction name="action_Toolbar_Input"/>
+   <addaction name="action_Toolbar_ArcadeInput"/>
+   <addaction name="action_Toolbar_PsxInput"/>
    <addaction name="action_Toolbar_Playback"/>
   </widget>
   <action name="action_System_StartRom">
@@ -537,6 +538,31 @@
    </property>
    <property name="text">
     <string>&amp;Input</string>
+   </property>
+   <property name="toolTip">
+    <string>Configure controller input</string>
+   </property>
+  </action>
+  <action name="action_Toolbar_ArcadeInput">
+   <property name="icon">
+    <iconset theme="gamepad-line"/>
+   </property>
+   <property name="text">
+    <string>inp arc</string>
+   </property>
+   <property name="toolTip">
+    <string>Map arcade game inputs</string>
+   </property>
+  </action>
+  <action name="action_Toolbar_PsxInput">
+   <property name="icon">
+    <iconset theme="gamepad-line"/>
+   </property>
+   <property name="text">
+    <string>inp psx</string>
+   </property>
+   <property name="toolTip">
+    <string>Map PlayStation inputs</string>
    </property>
   </action>
   <action name="action_Toolbar_Playback">
