@@ -1306,12 +1306,16 @@ bool Execute(const m64p_rollback_execute_callbacks& callbacks)
         {
             break;
         }
+
+        RunFrame(Output_Video | Output_Audio);
+
+        // Pace immediately before the present: the pacer's deadline targets
+        // the swap, so waiting before RunFrame would make the present land one
+        // frame_time late and miss the display vblank.
         if (callbacks.pace_before_present)
         {
             callbacks.pace_before_present(callbacks.user_data);
         }
-
-        RunFrame(Output_Video | Output_Audio);
 
         if (g_presentCallback != nullptr)
         {
