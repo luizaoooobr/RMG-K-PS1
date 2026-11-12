@@ -98,6 +98,9 @@ int         g_players        = 2;
 int         g_inputSize      = libretro_rt::kInputBytesPerPlayer;
 int         g_inputPlayers   = 0;
 bool        g_netgameMode    = false;
+// Only a session with remote peers needs the memory card removed: on one machine
+// both seats share the same card, so keeping it cannot cause a checksum split.
+bool        g_memoryCardDisabled = false;
 // Controller device announced to the core. JOYPAD is the only base device every
 // libretro core understands; Initialize() upgrades it to the best device the
 // loaded core actually declares (SwanStation exposes the DualShock as
@@ -149,13 +152,16 @@ std::map<std::string, std::string>     g_optionOverrides;
 
 bool g_logEnabled = false;
 
-// Recent core log lines (bounded). Kept even with the verbose log off: a
-// rollback session records this ring at start so the two peers can be compared
-// on the things that decide whether they are emulating the same machine at all
-// (BIOS region and file, disc image, core build).
+// Boot-time core log lines (bounded, oldest kept). Recorded even with the
+// verbose log off: a rollback session dumps them at start so the two peers can
+// be compared on the things that decide whether they are emulating the same
+// machine at all (BIOS region and file, disc image, memory card, core build).
+// The buffer keeps the *first* lines and stops growing, because the interesting
+// ones (BIOS picked, disc opened) are logged while the content loads -- a ring
+// that drops the oldest would throw exactly those away as the session goes on.
 std::mutex               g_coreLogMutex;
 std::vector<std::string> g_coreLogRing;
-constexpr std::size_t    kCoreLogRingMax = 96;
+constexpr std::size_t    kCoreLogRingMax = 256;
 
 void append_core_log_line(const char* line)
 {
@@ -167,9 +173,15 @@ void append_core_log_line(const char* line)
     std::lock_guard<std::mutex> lock(g_coreLogMutex);
     if (g_coreLogRing.size() >= kCoreLogRingMax)
     {
-        g_coreLogRing.erase(g_coreLogRing.begin());
+        return;
     }
     g_coreLogRing.emplace_back(line);
+}
+
+void clear_core_log()
+{
+    std::lock_guard<std::mutex> lock(g_coreLogMutex);
+    g_coreLogRing.clear();
 }
 
 void libretro_log(const char* fmt, ...)
@@ -474,7 +486,9 @@ static bool cb_environment(unsigned cmd, void* data)
             }
             const auto it = g_coreOptions.find(var->key);
             if (g_logEnabled && (std::strstr(var->key, "Renderer") != nullptr ||
-                                 std::strstr(var->key, "CDROM_") != nullptr))
+                                 std::strstr(var->key, "CDROM_") != nullptr ||
+                                 std::strstr(var->key, "MemoryCards_") != nullptr ||
+                                 std::strstr(var->key, "Runahead") != nullptr))
             {
                 cb_log(RETRO_LOG_INFO, "GetVariable %s -> %s", var->key,
                     it == g_coreOptions.end() ? "<missing>" : it->second.value.c_str());
@@ -861,6 +875,8 @@ bool Initialize(const char* corePath, const char* gamePath, const char* systemDi
     g_gameId = compute_game_id(gamePath);
     g_logEnabled = std::getenv("RMGK_PSX_LOG") != nullptr;
 
+    clear_core_log();
+
     g_localInput.assign(static_cast<size_t>(g_players) * static_cast<size_t>(g_inputSize), 0);
     g_appliedInput.assign(static_cast<size_t>(g_players) * static_cast<size_t>(g_inputSize), 0);
 
@@ -873,12 +889,44 @@ bool Initialize(const char* corePath, const char* gamePath, const char* systemDi
     SetOptionOverride("swanstation_GPU_Renderer", "Software");
     if (g_netgameMode)
     {
-        SetOptionOverride("swanstation_GPU_UseThread", "Disabled");
-        // The libretro build always runs the async CD reader (its display-only
-        // "Read Thread" option is never queried); the readahead option is what
-        // actually enables it. Sector delivery on a real-time schedule would
-        // make CD-ROM timing host-dependent, so pin it to synchronous.
-        SetOptionOverride("swanstation_CDROM_ReadaheadSectors", "Disabled (Synchronous)");
+        // Values below are the ones the core actually declares, and a value it
+        // does not know is silently dropped in favour of the default (measured:
+        // an unknown option value leaves the core on its default path). The
+        // booleans are "true"/"false" and the readahead is a sector count
+        // (0..32), NOT the "Disabled (Synchronous)" spelling Beetle PSX uses --
+        // the previous strings were invalid, so the async reader and readahead 8
+        // stayed in effect during netplay.
+        SetOptionOverride("swanstation_GPU_UseThread", "false");
+        // The async CD reader delivers sectors on a host thread's schedule, so a
+        // seek/read that the game starts on frame N can complete at a different
+        // emulated frame on each PC. That difference lands in the CD state, i.e.
+        // in the savestate checksum, and shows up as a desync around the first
+        // stage load. Pin reads to the emulation thread and drop the readahead
+        // buffer so sector delivery is purely cycle-driven and identical on both
+        // peers.
+        SetOptionOverride("swanstation_CDROM_ReadThread", "false");
+        SetOptionOverride("swanstation_CDROM_ReadaheadSectors", "0");
+        // GekkoNet drives rollback and run-ahead itself. A second, hidden timeline
+        // inside the core would be serialized as part of the state and would make
+        // a frame's result depend on when the core last ran ahead.
+        SetOptionOverride("swanstation_Main_RunaheadFrameCount", "0");
+    }
+
+    if (g_memoryCardDisabled)
+    {
+        // The memory card image is part of the core's serialized state (measured:
+        // flipping one byte of the card changes the savestate, and the 128 KB card
+        // is ~131 KB of the blob). With two peers, each PC has its own card file,
+        // with its own saves, or no card at all -- so the two machines differ from
+        // frame 0 and the very first checksum comparison fails even with identical
+        // inputs. Rollback cannot repair that: the divergence is in the starting
+        // state, not in a replayed frame.
+        //
+        // A network session therefore runs with both slots set to "None", which
+        // removes the card (and its bytes) from the emulated machine and from the
+        // state on both peers. Offline and local play keep the normal card.
+        SetOptionOverride("swanstation_MemoryCards_Card1Type", "None");
+        SetOptionOverride("swanstation_MemoryCards_Card2Type", "None");
     }
 
     g_lib = lib_open(corePath);
@@ -1415,6 +1463,11 @@ void SetInputPlayers(int players)
 void SetNetgameMode(bool netgame)
 {
     g_netgameMode = netgame;
+}
+
+void SetMemoryCardDisabled(bool disabled)
+{
+    g_memoryCardDisabled = disabled;
 }
 
 const VideoFrame& GetVideoFrame()

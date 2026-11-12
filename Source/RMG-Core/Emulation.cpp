@@ -1047,7 +1047,7 @@ static std::filesystem::path libretro_save_directory()
 // Boots the libretro core for `rom`. Leaves the rollback surface pointed at the
 // libretro runtime and sizes the GekkoNet state ring from the core's own
 // serializer, so nothing downstream needs to know which emulator is loaded.
-static bool libretro_start_runtime(const std::filesystem::path& rom, int players)
+static bool libretro_start_runtime(const std::filesystem::path& rom, int players, bool remotePeers = false)
 {
     const std::filesystem::path core = libretro_find_core();
     if (core.empty())
@@ -1067,6 +1067,7 @@ static bool libretro_start_runtime(const std::filesystem::path& rom, int players
     // before the core boots so both peers start bit-identical.
     CoreRollbackSetCore(CoreRollbackCore::Libretro);
     libretro_rt::SetNetgameMode(true);
+    libretro_rt::SetMemoryCardDisabled(remotePeers);
 
     const std::string corePath   = core.string();
     const std::string gamePath   = rom.string();
@@ -1582,7 +1583,7 @@ bool CoreStartEmulation(std::filesystem::path n64rom, std::filesystem::path n64d
                 CoreSettingsSetValue(SettingsID::Core_CPU_Emulator, 2);
                 if (psxTarget)
                 {
-                    netplay_ret = libretro_start_runtime(n64rom, 2);
+                    netplay_ret = libretro_start_runtime(n64rom, 2, true);
                     if (netplay_ret)
                     {
                         netplay_ret = rmgk_gekko::start_p2p_session("rmgk-gekko-psx",
@@ -1649,7 +1650,7 @@ bool CoreStartEmulation(std::filesystem::path n64rom, std::filesystem::path n64d
                 }
                 if (psxTarget)
                 {
-                    netplay_ret = libretro_start_runtime(n64rom, totalSeats);
+                    netplay_ret = libretro_start_runtime(n64rom, totalSeats, true);
                     if (netplay_ret)
                     {
                         netplay_ret = rmgk_gekko::start_lobby_session("rmgk-gekko-psx",

@@ -138,6 +138,11 @@ namespace libretro_rt
     // Pin the machine-local values a core may seed (RTC, random) so two peers
     // boot bit-identical. Must be called before Initialize().
     void SetNetgameMode(bool netgame);
+    // Drop the core's memory card from the emulated machine. Set this for
+    // sessions with remote peers only: the card image is part of the serialized
+    // state, and each PC has a different card file, so the two peers would
+    // diverge from frame 0. Must be called before Initialize().
+    void SetMemoryCardDisabled(bool disabled);
 
     // Last rendered frame / audio (valid after RunFrame(Output_Video/Output_Audio)).
     const VideoFrame& GetVideoFrame();
