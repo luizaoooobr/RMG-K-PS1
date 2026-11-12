@@ -13,6 +13,7 @@
 #include "m64p/api/m64p_types.h"
 
 #include <cstdint>
+#include <string>
 
 struct CoreRollbackState
 {
@@ -175,5 +176,9 @@ bool CoreRollbackSetTimesyncScale(double scale);
 bool CoreRollbackExecute(m64p_rollback_execute_callbacks& callbacks);
 bool CoreRollbackRunFrame(int flags);
 bool CoreRollbackGetRunFrameStats(CoreRollbackRunFrameStats& stats);
+
+// Boot-time log lines from the active runtime (empty when the runtime does not
+// expose one). Used to record which machine each peer booted.
+std::string CoreRollbackRecentCoreLog(void);
 
 #endif // CORE_ROLLBACK_NETCODE_HPP

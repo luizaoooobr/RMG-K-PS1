@@ -85,6 +85,10 @@ namespace libretro_rt
     const char* CoreName();
     const char* GameId();
 
+    // Boot-time core log lines (BIOS/region/disc image as the core saw them),
+    // captured so a rollback session can record which machine each peer booted.
+    std::string RecentCoreLog();
+
     // Same content id as above for a path that isn't loaded yet (the rom
     // browser tags entries with it so the lobby can match rooms before the
     // disc boots). Empty when the file can't be read.

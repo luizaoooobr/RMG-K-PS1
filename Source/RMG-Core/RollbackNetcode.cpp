@@ -501,3 +501,13 @@ bool CoreRollbackGetRunFrameStats(CoreRollbackRunFrameStats& stats)
     stats.outputFlags = coreStats.output_flags;
     return true;
 }
+
+std::string CoreRollbackRecentCoreLog(void)
+{
+    if (g_core == CoreRollbackCore::Libretro)
+    {
+        return libretro_rt::RecentCoreLog();
+    }
+
+    return std::string();
+}

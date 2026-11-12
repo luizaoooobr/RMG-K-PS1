@@ -149,19 +149,45 @@ std::map<std::string, std::string>     g_optionOverrides;
 
 bool g_logEnabled = false;
 
+// Recent core log lines (bounded). Kept even with the verbose log off: a
+// rollback session records this ring at start so the two peers can be compared
+// on the things that decide whether they are emulating the same machine at all
+// (BIOS region and file, disc image, core build).
+std::mutex               g_coreLogMutex;
+std::vector<std::string> g_coreLogRing;
+constexpr std::size_t    kCoreLogRingMax = 96;
+
+void append_core_log_line(const char* line)
+{
+    if (line == nullptr || line[0] == '\0')
+    {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(g_coreLogMutex);
+    if (g_coreLogRing.size() >= kCoreLogRingMax)
+    {
+        g_coreLogRing.erase(g_coreLogRing.begin());
+    }
+    g_coreLogRing.emplace_back(line);
+}
+
 void libretro_log(const char* fmt, ...)
 {
+    char buffer[1024];
+    va_list args;
+    va_start(args, fmt);
+    std::vsnprintf(buffer, sizeof(buffer), fmt, args);
+    va_end(args);
+
+    append_core_log_line(buffer);
+
     if (!g_logEnabled)
     {
         return;
     }
 
-    va_list args;
-    va_start(args, fmt);
-    std::fprintf(stderr, "[PSX] ");
-    std::vfprintf(stderr, fmt, args);
-    std::fprintf(stderr, "\n");
-    va_end(args);
+    std::fprintf(stderr, "[PSX] %s\n", buffer);
     std::fflush(stderr);
 }
 
@@ -367,16 +393,20 @@ static int16_t cb_input_state(unsigned port, unsigned device, unsigned index, un
 
 static void cb_log(enum retro_log_level level, const char* fmt, ...)
 {
+    char buffer[2048];
+    va_list args;
+    va_start(args, fmt);
+    std::vsnprintf(buffer, sizeof(buffer), fmt, args);
+    va_end(args);
+
+    append_core_log_line(buffer);
+
     if (!g_logEnabled && level > RETRO_LOG_WARN)
     {
         return;
     }
 
-    va_list args;
-    va_start(args, fmt);
-    std::fprintf(stderr, "[PSX] ");
-    std::vfprintf(stderr, fmt, args);
-    va_end(args);
+    std::fprintf(stderr, "[PSX] %s\n", buffer);
     std::fflush(stderr);
 }
 
@@ -1184,14 +1214,32 @@ bool SaveStateInto(unsigned char* buffer, int capacity, int& outLen, int& outChe
         return false;
     }
 
+    // retro_serialize_size() is an upper bound, not the length the core writes:
+    // swanstation reports 11.5 MB and fills only the first ~4.3 MB, and the
+    // filled length moves by a few bytes from frame to frame. Nothing promises
+    // the rest of the buffer is initialised (SaveStateAlloc hands us malloc'd
+    // memory), so hashing the declared size would mix in bytes the emulator
+    // never produced -- the same machine state could then checksum differently.
+    // Zero the buffer so the unwritten tail is always the same bytes, and hash
+    // only the prefix the core filled; skipping the zero run also cuts the
+    // per-frame checksum cost by ~60% (the save callback runs every frame).
+    std::memset(buffer, 0, size);
+
     if (!p_retro_serialize(buffer, size))
     {
         CoreSetError("LibretroRuntime: retro_serialize failed");
         return false;
     }
 
+    size_t written = size;
+    while (written > 0 && buffer[written - 1] == 0)
+    {
+        --written;
+    }
+
+    // outLen stays the full size: it is the length handed back to LoadState().
     outLen      = static_cast<int>(size);
-    outChecksum = static_cast<int>(fnv1a(buffer, size));
+    outChecksum = static_cast<int>(fnv1a(buffer, written));
     return true;
 }
 
@@ -1415,6 +1463,19 @@ void SetOptionOverride(const char* key, const char* value)
 double FrameRate()
 {
     return g_fps;
+}
+
+std::string RecentCoreLog()
+{
+    std::lock_guard<std::mutex> lock(g_coreLogMutex);
+    std::string out;
+    out.reserve(g_coreLogRing.size() * 64);
+    for (const std::string& line : g_coreLogRing)
+    {
+        out += line;
+        out += '\n';
+    }
+    return out;
 }
 
 } // namespace libretro_rt

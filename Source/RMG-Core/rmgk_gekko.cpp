@@ -1715,6 +1715,35 @@ void write_state_area_dump(const unsigned char* state, int len, int frame, int i
     }
 
     const std::vector<StateAreaView> areas = walk_state_areas(state, len);
+    if (areas.empty())
+    {
+        // A libretro core serializes one opaque blob with no block table. Emit a
+        // coarse hash table over the bytes the core actually wrote instead: two
+        // peers' logs can then be diffed to the block where they diverged
+        // without shipping 11 MB binaries around.
+        constexpr int kStateBlockBytes = 64 * 1024;
+        int written = len;
+        while (written > 0 && state[written - 1] == 0)
+        {
+            --written;
+        }
+
+        for (int offset = 0, block = 0; offset < written; offset += kStateBlockBytes, block++)
+        {
+            const int blockLen = std::min(kStateBlockBytes, written - offset);
+            std::ostringstream stream;
+            stream << "state_block dump=" << index << " frame=" << frame
+                   << " block=" << block
+                   << " offset=" << offset
+                   << " len=" << blockLen
+                   << " fnv=0x" << std::hex
+                   << fnv1a_state_area(state + offset, static_cast<unsigned int>(blockLen));
+            write_gekko_log(stream.str());
+        }
+        write_state_file(state, len, frame, index);
+        return;
+    }
+
     for (std::size_t area = 0; area < areas.size(); area++)
     {
         std::ostringstream stream;
@@ -1773,7 +1802,8 @@ void dump_post_desync_state(const unsigned char* state, int len, int frame)
 //
 // Loading and re-saving here costs two frame-length state copies, so it runs a
 // handful of times per session, only with the verbose log on, and only for
-// FBNeo blobs (BurnStateCompress header). It happens inside the save callback,
+// blobs we can drive through the rollback runtime (FBNeo BurnStateCompress or a
+// libretro core). It happens inside the save callback,
 // i.e. at a frame boundary, so the machine has nothing half-updated to lose.
 constexpr int kGekkoRoundtripMaxReportedAreas = 40;
 
@@ -1786,9 +1816,11 @@ void test_state_roundtrip(const unsigned char* state, int len, int frame, int sa
 
     unsigned int headerId = 0;
     memcpy(&headerId, state, 4);
-    if (headerId != kGekkoStateHeaderId)
+    const bool fbneoBlob = headerId == kGekkoStateHeaderId;
+    if (!fbneoBlob && CoreRollbackGetCore() != CoreRollbackCore::Libretro)
     {
-        // Not a BurnStateCompress blob (N64 and other cores use their own path).
+        // Not a BurnStateCompress blob and not a core we can re-save through the
+        // libretro runtime (N64 keeps its own path).
         return;
     }
 
@@ -1815,6 +1847,43 @@ void test_state_roundtrip(const unsigned char* state, int len, int frame, int sa
         std::ostringstream stream;
         stream << "state_roundtrip frame=" << frame << " result=save_fail";
         write_gekko_log(stream.str());
+        return;
+    }
+
+    if (!fbneoBlob)
+    {
+        // Libretro cores expose one opaque blob with no area table to walk, so
+        // compare the bytes the save path produced. That path zeroes whatever
+        // the core did not write, which makes the two blobs directly comparable.
+        int differingBytes = 0;
+        int firstDifference = -1;
+        const int compareLen = std::min(len, result.len);
+        for (int i = 0; i < compareLen; i++)
+        {
+            if (state[i] == resaved[static_cast<std::size_t>(i)])
+            {
+                continue;
+            }
+            differingBytes++;
+            if (firstDifference < 0)
+            {
+                firstDifference = i;
+            }
+        }
+
+        std::ostringstream stream;
+        stream << "state_roundtrip frame=" << frame << " result="
+               << (differingBytes == 0 && len == result.len ? "ok" : "mismatch")
+               << " core=libretro"
+               << " len=" << len << " len_resaved=" << result.len
+               << " checksum=" << savedChecksum
+               << " checksum_resaved=" << result.checksum
+               << " differing_bytes=" << differingBytes
+               << " first_diff=" << firstDifference;
+        write_gekko_log(stream.str());
+
+        write_state_file(state, len, frame, 20);
+        write_state_file(resaved.data(), result.len, frame, 21);
         return;
     }
 
@@ -3164,6 +3233,38 @@ void write_gekko_log(const std::string& message)
     append_gekko_log_line(message);
 }
 
+// Records what the emulator actually booted. The core's own log lines carry the
+// BIOS region/file and the disc image it opened; two peers that booted
+// different BIOS files emulate different machines from frame 0, so the session
+// log keeps this fingerprint for a post-mortem compare.
+void log_core_boot_fingerprint()
+{
+    if (!g_GekkoLogEnabled)
+    {
+        return;
+    }
+
+    const std::string boot = CoreRollbackRecentCoreLog();
+    if (boot.empty())
+    {
+        return;
+    }
+
+    write_gekko_log("core_boot_log_begin");
+
+    std::istringstream lines(boot);
+    std::string line;
+    while (std::getline(lines, line))
+    {
+        if (!line.empty())
+        {
+            write_gekko_log(std::string("core_boot_log ") + line);
+        }
+    }
+
+    write_gekko_log("core_boot_log_end");
+}
+
 bool rmgk_gekko::start_p2p_session(const char* gameName, int players, int inputSize,
     int localPlayer, unsigned short localPort, const char* remoteIp, unsigned short remotePort, int localDelay, int predictionWindow)
 {
@@ -3356,6 +3457,7 @@ bool rmgk_gekko::start_p2p_session(const char* gameName, int players, int inputS
         return false;
     }
     write_gekko_log("install_core_input_callback result=ok");
+    log_core_boot_fingerprint();
     return true;
 #endif
 }
@@ -3669,6 +3771,7 @@ bool rmgk_gekko::start_lobby_session(const char* gameName, int players, int inpu
         return false;
     }
     write_gekko_log("install_core_input_callback result=ok");
+    log_core_boot_fingerprint();
     return true;
 #endif
 }
@@ -3787,6 +3890,7 @@ bool rmgk_gekko::start_local_session(const char* gameName, int players, int inpu
         return false;
     }
     write_gekko_log("start_local_session result=ok");
+    log_core_boot_fingerprint();
     return true;
 #endif
 }
