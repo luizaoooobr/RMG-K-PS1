@@ -15,7 +15,7 @@ SHARUN_URL="https://github.com/VHSgunzo/sharun/releases/latest/download/sharun-$
 
 export ARCH="$arch"
 export APPIMAGE_EXTRACT_AND_RUN=1
-export VERSION="$(git describe --tags --always)"
+export VERSION="${VERSION:-$(git describe --tags --always)}"
 export OUTPUT="$bin_dir/../RMG-K-Portable-Linux64-$VERSION.AppImage"
 export LD_LIBRARY_PATH="$toplvl_dir/Build/AppImage/Source/RMG-Core" # hack
 export SHARUN="$script_dir/sharun"
@@ -70,6 +70,21 @@ then
 fi
 mkdir -p "$bin_dir/usr/share/RMG/Translations"
 cp "$qtbase_translation" "$bin_dir/usr/share/RMG/Translations/"
+
+# The PS1 sessions load swanstation from the core directory. Bundle the patched
+# core (Package/PsxCore) so the AppImage does not depend on whatever the user
+# installed under ~/.local/share/RMG/cores - a different, unpatched swanstation
+# build desyncs PS1 netplay between machines.
+psx_core="${RMGK_PSX_CORE_SO:-$toplvl_dir/Package/PsxCore/swanstation_libretro.so}"
+if [[ ! -s "$psx_core" ]]
+then
+	echo "PS1 core not found: $psx_core" >&2
+	echo "Build it with Package/PsxCore/build-linux.sh or point RMGK_PSX_CORE_SO at a swanstation_libretro.so." >&2
+	exit 1
+fi
+mkdir -p "$bin_dir/usr/lib/RMG/Core/cores"
+cp -f "$psx_core" "$bin_dir/usr/lib/RMG/Core/cores/swanstation_libretro.so"
+
 ln -s com.github.Rosalie241.RMG.png "$bin_dir"/.DirIcon
 mv "$bin_dir/usr/share" "$bin_dir/share"
 mv "$bin_dir/usr" "$bin_dir/shared"

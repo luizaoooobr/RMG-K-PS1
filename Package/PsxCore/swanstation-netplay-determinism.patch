@@ -1,0 +1,326 @@
+diff --git a/src/core/analog_controller.cpp b/src/core/analog_controller.cpp
+index 456983e..e77c6ab 100644
+--- a/src/core/analog_controller.cpp
++++ b/src/core/analog_controller.cpp
+@@ -53,8 +53,16 @@ bool AnalogController::DoState(StateWrapper& sw, bool apply_input_state)
+   sw.DoEx(&button_state, 44, static_cast<uint16_t>(0xFFFF));
+   if (apply_input_state)
+     m_button_state = button_state;
+-  else
+-    m_analog_mode = old_analog_mode;
++
++  // The game can lock the controller to analog or digital mode. This field was
++  // never part of the state, so after a load it kept whatever the "future"
++  // timeline had left behind and the next pad poll could disagree with the
++  // restored machine (desyncs on netplay rollback).
++  sw.DoEx(&m_analog_locked, 58, false);
++
++  // Input latch for the analog-mode toggle button. Part of the serialized state so
++  // that a rollback replay sees the same press/release edges as the original run.
++  sw.DoEx(&m_analog_button_pressed, 59, false);
+ 
+   sw.Do(&m_command);
+   sw.DoEx(&m_command_step, 57, 0);
+@@ -92,7 +100,7 @@ bool AnalogController::DoState(StateWrapper& sw, bool apply_input_state)
+     for (uint8_t i = 0; i < NUM_MOTORS; i++)
+       SetMotorState(i, motor_state[i]);
+ 
+-    if (old_analog_mode != m_analog_mode)
++    if (apply_input_state && old_analog_mode != m_analog_mode)
+     {
+       g_host_interface->AddFormattedOSDMessage(
+         5.0f,
+@@ -138,8 +146,9 @@ void AnalogController::SetButtonState(Button button, bool pressed)
+ 
+   if (button == Button::Analog)
+   {
+-    // analog toggle
+-    if (pressed)
++    // analog toggle, edge-triggered: the frontend reports the raw button level every
++    // frame, and the previous level is part of the serialized state.
++    if (pressed && !m_analog_button_pressed)
+     {
+       if (m_command == Command::Idle)
+         ProcessAnalogModeToggle();
+@@ -147,6 +156,7 @@ void AnalogController::SetButtonState(Button button, bool pressed)
+         m_analog_toggle_queued = true;
+     }
+ 
++    m_analog_button_pressed = pressed;
+     return;
+   }
+ 
+diff --git a/src/core/analog_controller.h b/src/core/analog_controller.h
+index c9566f8..eccb6be 100644
+--- a/src/core/analog_controller.h
++++ b/src/core/analog_controller.h
+@@ -115,6 +115,7 @@ private:
+ 
+   bool m_analog_mode = false;
+   bool m_analog_locked = false;
++  bool m_analog_button_pressed = false;
+   bool m_dualshock_enabled = false;
+   bool m_configuration_mode = false;
+ 
+diff --git a/src/core/negcon_rumble.cpp b/src/core/negcon_rumble.cpp
+index b213aa2..fd0d04e 100644
+--- a/src/core/negcon_rumble.cpp
++++ b/src/core/negcon_rumble.cpp
+@@ -52,8 +52,9 @@ bool NeGconRumble::DoState(StateWrapper& sw, bool apply_input_state)
+   sw.DoEx(&button_state, 44, static_cast<uint16_t>(0xFFFF));
+   if (apply_input_state)
+     m_button_state = button_state;
+-  else
+-    m_analog_mode = old_analog_mode;
++
++  sw.DoEx(&m_analog_locked, 59, false);
++  sw.DoEx(&m_analog_button_pressed, 59, false);
+ 
+   sw.Do(&m_command);
+   sw.DoEx(&m_command_step, 57, 0);
+@@ -91,7 +92,7 @@ bool NeGconRumble::DoState(StateWrapper& sw, bool apply_input_state)
+     for (uint8_t i = 0; i < NUM_MOTORS; i++)
+       SetMotorState(i, motor_state[i]);
+ 
+-    if (old_analog_mode != m_analog_mode)
++    if (apply_input_state && old_analog_mode != m_analog_mode)
+     {
+       g_host_interface->AddFormattedOSDMessage(
+         5.0f,
+@@ -156,8 +157,8 @@ void NeGconRumble::SetButtonState(Button button, bool pressed)
+ 
+   if (button == Button::Analog)
+   {
+-    // analog toggle
+-    if (pressed)
++    // analog toggle, edge-triggered (see AnalogController).
++    if (pressed && !m_analog_button_pressed)
+     {
+       if (m_command == Command::Idle)
+         ProcessAnalogModeToggle();
+@@ -165,6 +166,7 @@ void NeGconRumble::SetButtonState(Button button, bool pressed)
+         m_analog_toggle_queued = true;
+     }
+ 
++    m_analog_button_pressed = pressed;
+     return;
+   }
+ 
+diff --git a/src/core/negcon_rumble.h b/src/core/negcon_rumble.h
+index 27fd9d8..a310239 100644
+--- a/src/core/negcon_rumble.h
++++ b/src/core/negcon_rumble.h
+@@ -103,6 +103,7 @@ private:
+ 
+   bool m_analog_mode = false;
+   bool m_analog_locked = false;
++  bool m_analog_button_pressed = false;
+   bool m_dualshock_enabled = false;
+   bool m_configuration_mode = false;
+ 
+diff --git a/src/core/save_state_version.h b/src/core/save_state_version.h
+index 027db06..5e7a378 100644
+--- a/src/core/save_state_version.h
++++ b/src/core/save_state_version.h
+@@ -2,7 +2,7 @@
+ #include "types.h"
+ 
+ static constexpr uint32_t SAVE_STATE_MAGIC = 0x43435544;
+-static constexpr uint32_t SAVE_STATE_VERSION = 57;
++static constexpr uint32_t SAVE_STATE_VERSION = 59;
+ static constexpr uint32_t SAVE_STATE_MINIMUM_VERSION = 42;
+ 
+ #pragma pack(push, 4)
+diff --git a/src/core/system.cpp b/src/core/system.cpp
+index 5adc67f..a69b77c 100644
+--- a/src/core/system.cpp
++++ b/src/core/system.cpp
+@@ -1145,7 +1145,13 @@ bool SaveState(ByteStream* state)
+ 
+   if (g_cdrom.HasMedia())
+   {
+-    const std::string& media_filename = g_cdrom.GetMediaFileName();
++    // Only the file name belongs in the state. The absolute path is specific to
++    // the machine, and rollback peers compare state checksums, so two PCs with
++    // the same disc in different folders would otherwise differ from frame 0
++    // (the path sits right before the data section, so its length shifts every
++    // following byte too). LoadState() resolves the disc through the libretro
++    // disk-control trailer, and FindDiskImage() matches display names.
++    const std::string media_filename = FileSystem::GetDisplayNameFromPath(g_cdrom.GetMediaFileName());
+     header.offset_to_media_filename = static_cast<uint32_t>(state->GetPosition());
+     header.media_filename_length = static_cast<uint32_t>(media_filename.length());
+     header.media_subimage_index = g_cdrom.GetMedia()->HasSubImages() ? g_cdrom.GetMedia()->GetCurrentSubImage() : 0;
+diff --git a/src/libretro/libretro_host_interface.cpp b/src/libretro/libretro_host_interface.cpp
+index 6f97a84..33527ea 100644
+--- a/src/libretro/libretro_host_interface.cpp
++++ b/src/libretro/libretro_host_interface.cpp
+@@ -269,10 +269,8 @@ bool g_retro_skip_audio_this_frame = false;
+ static retro_log_callback s_libretro_log_callback = {};
+ static bool s_libretro_log_callback_registered = false;
+ static bool libretro_supports_option_categories = false;
+-static bool analog_pressed = false;
+ static bool port_allowed = false;
+ static unsigned libretro_msg_interface_version = 0;
+-static int analog_index = -1;
+ 
+ static void LibretroLogCallback(void* pUserParam, const char* channelName, const char* functionName, LogLevel level,
+                                 const char* message)
+@@ -1003,7 +1001,11 @@ bool HostInterface::retro_serialize(void* data, size_t size)
+ 
+   const DiskControlInfo& info = m_disk_control_info;
+   const bool no_disc = info.image_index >= info.image_count;
+-  const std::string path = no_disc ? std::string() : info.image_paths[info.image_index];
++  // Display name only: the absolute path differs per machine, and the state
++  // checksum must not depend on where the disc lives. retro_unserialize()'s
++  // FindDiskImage() already falls back to display-name matching.
++  const std::string path =
++    no_disc ? std::string() : FileSystem::GetDisplayNameFromPath(info.image_paths[info.image_index]);
+   const DiskStateHeader header{DISK_STATE_MAGIC, DISK_STATE_VERSION,
+                                (System::IsMediaTrayOpen() ? DISK_STATE_EJECTED : 0u) | (no_disc ? DISK_STATE_NO_DISC : 0u) |
+                                  (info.has_sub_images ? DISK_STATE_CONTAINER : 0u),
+@@ -1787,74 +1789,58 @@ void HostInterface::UpdateControllersAnalogController(uint32_t index)
+   const bool PadCombo_Select = (active & (1u << RETRO_DEVICE_ID_JOYPAD_SELECT)) != 0u;
+   int analog_press_status = 0;
+ 
+-  // Check if we're allowed to press the analog button, and then set the selected combo.
+-  if (!analog_pressed)
++  // Pass the raw combo state to the controller every frame; the controller
++  // edge-detects the press itself from serialized state, so a rollback replay
++  // reproduces the same toggle. Do not latch here: that latch is frontend
++  // state and used to make the replay skip the toggle.
++  switch (g_settings.controller_analog_combo)
+   {
+-    switch (g_settings.controller_analog_combo)
+-    {
+-      case 1:
+-        analog_press_status = (PadCombo_L1 && PadCombo_R1 && PadCombo_L3 && PadCombo_R3);
+-        break;
+-
+-      case 2:
+-        analog_press_status = (PadCombo_L1 && PadCombo_R1 && PadCombo_L2 && PadCombo_R2 && PadCombo_Start && PadCombo_Select);
+-        break;
++    case 1:
++      analog_press_status = (PadCombo_L1 && PadCombo_R1 && PadCombo_L3 && PadCombo_R3);
++      break;
+ 
+-      case 3:
+-        analog_press_status = (PadCombo_L1 && PadCombo_R1 && PadCombo_Select);
+-        break;
++    case 2:
++      analog_press_status = (PadCombo_L1 && PadCombo_R1 && PadCombo_L2 && PadCombo_R2 && PadCombo_Start && PadCombo_Select);
++      break;
+ 
+-      case 4:
+-        analog_press_status = (PadCombo_L1 && PadCombo_R1 && PadCombo_Start);
+-        break;
++    case 3:
++      analog_press_status = (PadCombo_L1 && PadCombo_R1 && PadCombo_Select);
++      break;
+ 
+-      case 5:
+-        analog_press_status = (PadCombo_L1 && PadCombo_R1 && PadCombo_L3);
+-        break;
++    case 4:
++      analog_press_status = (PadCombo_L1 && PadCombo_R1 && PadCombo_Start);
++      break;
+ 
+-      case 6:
+-        analog_press_status = (PadCombo_L1 && PadCombo_R1 && PadCombo_R3);
+-        break;
++    case 5:
++      analog_press_status = (PadCombo_L1 && PadCombo_R1 && PadCombo_L3);
++      break;
+ 
+-      case 7:
+-        analog_press_status = (PadCombo_L2 && PadCombo_R2 && PadCombo_Select);
+-        break;
++    case 6:
++      analog_press_status = (PadCombo_L1 && PadCombo_R1 && PadCombo_R3);
++      break;
+ 
+-      case 8:
+-        analog_press_status = (PadCombo_L2 && PadCombo_R2 && PadCombo_Start);
+-        break;
++    case 7:
++      analog_press_status = (PadCombo_L2 && PadCombo_R2 && PadCombo_Select);
++      break;
+ 
+-      case 9:
+-        analog_press_status = (PadCombo_L2 && PadCombo_R2 && PadCombo_L3);
+-        break;
++    case 8:
++      analog_press_status = (PadCombo_L2 && PadCombo_R2 && PadCombo_Start);
++      break;
+ 
+-      case 10:
+-        analog_press_status = (PadCombo_L2 && PadCombo_R2 && PadCombo_R3);
+-        break;
++    case 9:
++      analog_press_status = (PadCombo_L2 && PadCombo_R2 && PadCombo_L3);
++      break;
+ 
+-      case 11:
+-        analog_press_status = (PadCombo_L3 && PadCombo_R3);
+-        break;
+-    }
+-  }
++    case 10:
++      analog_press_status = (PadCombo_L2 && PadCombo_R2 && PadCombo_R3);
++      break;
+ 
+-  // Workaround for the fact it will otherwise spam the analog button.
+-  if (analog_press_status)
+-  {
+-    analog_index = index;
+-    analog_pressed = true;
+-    controller->SetButtonState(AnalogController::Button::Analog, (analog_press_status));
+-    analog_press_status = 0;
++    case 11:
++      analog_press_status = (PadCombo_L3 && PadCombo_R3);
++      break;
+   }
+ 
+-  // Check if all possible combo buttons are released and the index matches the player slot.
+-  // Also make sure having another DualShock plugged in doesn't prematurely clear the button block.
+-  if (((uint32_t)analog_index == index) && analog_pressed &&
+-       !PadCombo_L1 && !PadCombo_R1 && !PadCombo_L2 && !PadCombo_R2 && !PadCombo_L3 && !PadCombo_R3 && !PadCombo_Start && !PadCombo_Select)
+-  {
+-    analog_pressed = false;
+-    analog_index = -1;
+-  }
++  controller->SetButtonState(AnalogController::Button::Analog, analog_press_status != 0);
+ }
+ 
+ void HostInterface::UpdateControllersAnalogJoystick(uint32_t index)
+@@ -2027,29 +2013,9 @@ void HostInterface::UpdateControllersNeGconRumble(uint32_t index)
+ 
+   // All this is retained from UpdateControllersAnalogController because we can't map the Analog button normally due to input spam...
+   const bool Analog_Select = (active & (1u << RETRO_DEVICE_ID_JOYPAD_SELECT)) != 0u;
+-  int analog_press_status = 0;
+-
+-  // Check if we're allowed to press the analog button, and then set the selected combo.
+-  if (!analog_pressed)
+-    analog_press_status = Analog_Select;
+-
+-  // Workaround for the fact it will otherwise spam the analog button.
+-  if (analog_press_status)
+-  {
+-    analog_index = index;
+-    analog_pressed = true;
+-    controller->SetButtonState(NeGconRumble::Button::Analog, (analog_press_status));
+-    analog_press_status = 0;
+-  }
+-
+-  // Check if all possible combo buttons are released and the index matches the player slot.
+-  // Also make sure having another DualShock plugged in doesn't prematurely clear the button block.
+-  if (((uint32_t)analog_index == index) && analog_pressed && !Analog_Select)
+-  {
+-    analog_pressed = false;
+-    analog_index = -1;
+-  }
+ 
++  // Raw level; NeGconRumble edge-detects the press from serialized state.
++  controller->SetButtonState(NeGconRumble::Button::Analog, Analog_Select);
+ }
+ 
+ void HostInterface::UpdateControllersNamcoGunCon(uint32_t index)
