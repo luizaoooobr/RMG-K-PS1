@@ -76,12 +76,14 @@ namespace
 // makes of it) small. The old 24 MB value was 42x the real state and is what
 // made multi-buffer allocation and per-save copies expensive.
 //
-// A libretro core serializes much more (Beetle PSX: 2 MB RAM + 1 MB VRAM +
-// SPU/CD state -> ~5 MB), so the capacity is per-session instead of a constant:
-// FBNeo always keeps the historical 2 MB, and a libretro session is sized from
-// retro_serialize_size() by the caller before it starts (see
-// rmgk_gekko::set_state_capacity_bytes).
-constexpr unsigned int kFbneoStateCapacityBytes = 2u * 1024u * 1024u;
+// Mupen64Plus is a different story: its rollback savestate carries the whole
+// RDRAM plus SP/PIF and the cartridge save chips (~11.5 MB for Mario Kart 64),
+// so it keeps the upstream 24 MB budget. A libretro core serializes much more
+// than FBNeo too (Beetle PSX: ~5 MB) and is sized from retro_serialize_size()
+// by the caller before the session starts. CoreStartEmulation applies the
+// per-runtime default through set_state_capacity_bytes().
+constexpr unsigned int kFbneoStateCapacityBytes = rmgk_gekko::kFbneoStateCapacityBytes;
+constexpr unsigned int kMupenStateCapacityBytes = rmgk_gekko::kMupenStateCapacityBytes;
 constexpr unsigned int kStateCapacityMinBytes = 1u * 1024u * 1024u;
 constexpr unsigned int kStateCapacityMaxBytes = 64u * 1024u * 1024u;
 unsigned int g_GekkoStateCapacity = kFbneoStateCapacityBytes;
@@ -3294,9 +3296,10 @@ bool rmgk_gekko::start_p2p_session(const char* gameName, int players, int inputS
         return false;
     }
 
-    // FBNeo (4-byte input) keeps the historical tight ring; a libretro session
-    // sizes it through set_state_capacity_bytes() before calling in.
-    if (inputSize == static_cast<int>(sizeof(uint32_t)))
+    // FBNeo keeps the historical tight ring. N64 also uses a 4-byte input
+    // packet, so the runtime (not the input size) decides the default here;
+    // CoreStartEmulation already applied the per-runtime capacity.
+    if (CoreRollbackGetCore() == CoreRollbackCore::Fbneo)
     {
         g_GekkoStateCapacity = kFbneoStateCapacityBytes;
     }
@@ -3505,7 +3508,8 @@ bool rmgk_gekko::start_lobby_session(const char* gameName, int players, int inpu
         return false;
     }
 
-    if (inputSize == static_cast<int>(sizeof(uint32_t)))
+    // See start_p2p_session: the runtime owns the default, not the input size.
+    if (CoreRollbackGetCore() == CoreRollbackCore::Fbneo)
     {
         g_GekkoStateCapacity = kFbneoStateCapacityBytes;
     }
@@ -3654,6 +3658,7 @@ bool rmgk_gekko::start_lobby_session(const char* gameName, int players, int inpu
                << " clamped_prediction_window=" << clampedPredictionWindow
                << " transport=" << (useIce ? "libjuice_ice" :
                     (g_GekkoUsingExternalSocket ? "shared_anchor_socket" : "gekko_default_udp"))
+               << " state_capacity=" << g_GekkoStateCapacity
                << " num_remotes=" << numRemotes;
         for (int i = 0; i < numRemotes; i++)
         {
@@ -3798,7 +3803,8 @@ bool rmgk_gekko::start_local_session(const char* gameName, int players, int inpu
         return false;
     }
 
-    if (inputSize == static_cast<int>(sizeof(uint32_t)))
+    // See start_p2p_session: the runtime owns the default, not the input size.
+    if (CoreRollbackGetCore() == CoreRollbackCore::Fbneo)
     {
         g_GekkoStateCapacity = kFbneoStateCapacityBytes;
     }

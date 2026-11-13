@@ -72,10 +72,18 @@ class rmgk_gekko
         const LobbyRemotePeer* remotes, int numRemotes,
         int localDelay, int predictionWindow);
     static bool start_local_session(const char* gameName, int players, int inputSize, int localDelay);
-    // Sizes the per-frame rollback state ring for the next session. FBNeo keeps
-    // its historical 2 MB; a libretro core is sized from retro_serialize_size()
-    // (Beetle PSX needs ~5 MB). Values are clamped to 1..64 MB and are reset to
-    // the FBNeo default automatically for any 4-byte (uint32) input session.
+    // Per-runtime capacity of the rollback state ring. FBNeo packs a ~564 KB
+    // state, so it keeps the historical tight 2 MB (each buffer is copied a few
+    // times by GekkoNet). Mupen64Plus rollback states carry RDRAM, SP/PIF and
+    // the cartridge save chips: Mario Kart 64 measures ~8.4 MB, so it needs the
+    // same 24 MB budget the upstream build used. Libretro sizes itself from
+    // retro_serialize_size() in CoreStartEmulation.
+    static constexpr unsigned int kFbneoStateCapacityBytes = 2u * 1024u * 1024u;
+    static constexpr unsigned int kMupenStateCapacityBytes = 24u * 1024u * 1024u;
+    // Sizes the per-frame rollback state ring for the next session. Values are
+    // clamped to 1..64 MB. CoreStartEmulation picks the per-runtime default
+    // before any session is created; 4-byte (uint32) input sessions are not
+    // assumed to be FBNeo anymore because N64 also uses 4-byte input packets.
     static void set_state_capacity_bytes(unsigned int bytes);
     static unsigned int state_capacity_bytes();
     // n02-style shared transport: adopt an already-bound UDP socket (the

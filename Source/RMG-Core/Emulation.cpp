@@ -1371,6 +1371,18 @@ bool CoreStartEmulation(std::filesystem::path n64rom, std::filesystem::path n64d
     CoreRollbackSetCore(psxTarget ? CoreRollbackCore::Libretro
                         : (fbneoTarget ? CoreRollbackCore::Fbneo
                                        : CoreRollbackCore::Mupen));
+    // Size the rollback state ring for the runtime that will drive this session.
+    // A libretro core is sized later from retro_serialize_size(), after it has
+    // booted. N64 must not inherit FBNeo's tight 2 MB ring (Mario Kart 64 saves
+    // ~8.4 MB per state), and FBNeo must not inherit the 24 MB N64 ring.
+    if (fbneoTarget)
+    {
+        rmgk_gekko::set_state_capacity_bytes(rmgk_gekko::kFbneoStateCapacityBytes);
+    }
+    else if (!psxTarget)
+    {
+        rmgk_gekko::set_state_capacity_bytes(rmgk_gekko::kMupenStateCapacityBytes);
+    }
     s_FbneoSessionActive = fbneoTarget;
     s_LibretroSessionActive = false;
     if (!psxTarget)
