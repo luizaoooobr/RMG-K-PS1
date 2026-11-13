@@ -138,13 +138,17 @@ struct CoreRollbackRunFrameStats
 
 using CoreRollbackInputCallback = int (*)(void* values, int size, int players);
 
-// Which emulator runtime the rollback surface drives. Defaults to FBNeo, so
-// every existing arcade/N64 path keeps its behaviour unless a session
-// explicitly selects the libretro runtime.
+// Which emulator runtime the rollback surface drives.
+//
+// Mupen is the default: it is the in-process mupen64plus rollback engine
+// (M64CMD_ROLLBACK_*), which is what a Nintendo 64 session has always used.
+// FBNeo drives arcade romsets and Libretro drives PlayStation discs; both are
+// selected explicitly by CoreStartEmulation once it knows the target.
 enum class CoreRollbackCore
 {
-    Fbneo = 0,
-    Libretro = 1,
+    Mupen = 0,
+    Fbneo = 1,
+    Libretro = 2,
 };
 
 // Selects the runtime used by every CoreRollback* call below. Set it once,

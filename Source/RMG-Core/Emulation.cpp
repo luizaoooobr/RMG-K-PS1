@@ -14,6 +14,7 @@
 #include "RomHeader.hpp"
 #include "Settings.hpp"
 #include "SaveState.hpp"
+#include "NetplaySave.hpp"
 #include "Library.hpp"
 #include "Netplay.hpp"
 #include "Kaillera.hpp"
@@ -1080,7 +1081,7 @@ static bool libretro_start_runtime(const std::filesystem::path& rom, int players
         const std::string rtError = CoreGetError();
         CoreSetError("CoreStartEmulation: PS1 core initialization failed" +
             (rtError.empty() ? std::string() : (": " + rtError)));
-        CoreRollbackSetCore(CoreRollbackCore::Fbneo);
+        CoreRollbackSetCore(CoreRollbackCore::Mupen);
         return false;
     }
 
@@ -1089,7 +1090,7 @@ static bool libretro_start_runtime(const std::filesystem::path& rom, int players
     {
         CoreSetError("CoreStartEmulation: PS1 core cannot serialize state (rollback impossible)");
         libretro_rt::Shutdown();
-        CoreRollbackSetCore(CoreRollbackCore::Fbneo);
+        CoreRollbackSetCore(CoreRollbackCore::Mupen);
         return false;
     }
     // Serialized sizes can drift by a few bytes between frames (CD/SPU state),
@@ -1364,6 +1365,12 @@ bool CoreStartEmulation(std::filesystem::path n64rom, std::filesystem::path n64d
     const bool fbneoTarget = fbneo_is_driver_archive(n64rom);
     // PlayStation discs bypass it as well: they are played by a libretro core.
     const bool psxTarget = !fbneoTarget && libretro_rt::IsMediaFile(n64rom.string().c_str());
+    // Point the rollback surface at the runtime this session drives *before*
+    // any session is created: start_*_session installs the core input callback
+    // and sizes the state ring from the selected runtime.
+    CoreRollbackSetCore(psxTarget ? CoreRollbackCore::Libretro
+                        : (fbneoTarget ? CoreRollbackCore::Fbneo
+                                       : CoreRollbackCore::Mupen));
     s_FbneoSessionActive = fbneoTarget;
     s_LibretroSessionActive = false;
     if (!psxTarget)
@@ -1478,10 +1485,16 @@ bool CoreStartEmulation(std::filesystem::path n64rom, std::filesystem::path n64d
     // fbneoTarget == false) keeps the real local time.
     fbneo_rt::SetNetgameMode(fbneoNetgameMode);
 
+    // A synchronized session is any rollback netplay session (P2P, lobby or
+    // Kaillera) plus explicit local rollback testing. Those keep the game's
+    // cartridge saves in memory instead of touching the player's save files.
+    const bool syncedSession = localRollbackEnabled ||
+        (netplay && (address == "KAILLERA" || address.rfind("GEKKO|", 0) == 0 || address.rfind("LOBBY|", 0) == 0));
+
 #ifdef NETPLAY
     // Apply deterministic settings AFTER all overlays for synchronized netplay or
     // explicit local rollback testing.
-    if (localRollbackEnabled || (netplay && (address == "KAILLERA" || address.rfind("GEKKO|", 0) == 0 || address.rfind("LOBBY|", 0) == 0)))
+    if (syncedSession)
     {
         apply_kaillera_deterministic_settings();
     }
@@ -1516,9 +1529,7 @@ bool CoreStartEmulation(std::filesystem::path n64rom, std::filesystem::path n64d
                 if (fbneoTarget)
                 {
                     CoreSettingsSetValue(SettingsID::Core_CPU_Emulator, 2);
-                    fprintf(stderr, "[FBNEO-DBG] kaillera-arcade init game=%s archives=%d\n", fbneoGame.c_str(), fbneoArchiveCount); fflush(stderr);
                     const bool fbInit = fbneo_rt::Initialize(fbneoGame.c_str(), fbneoArchivePtrs, fbneoArchiveCount, 2);
-                    fprintf(stderr, "[FBNEO-DBG] kaillera-arcade fbneo_rt::Initialize=%d err=%s\n", (int)fbInit, CoreGetError().c_str()); fflush(stderr);
                     if (!fbInit)
                     {
                         const std::string fbErr = CoreGetError();
@@ -1533,7 +1544,6 @@ bool CoreStartEmulation(std::filesystem::path n64rom, std::filesystem::path n64d
                         if (seats < 2) { seats = 2; }
                         if (seats > 4) { seats = 4; }
                         netplay_ret = rmgk_gekko::start_local_session("rmgk-gekko-kaillera", seats, 4, 0);
-                        fprintf(stderr, "[FBNEO-DBG] kaillera-arcade start_local_session=%d seats=%d err=%s\n", (int)netplay_ret, seats, CoreGetError().c_str()); fflush(stderr);
                         if (!netplay_ret)
                         {
                             if (CoreGetError().empty())
@@ -1599,19 +1609,41 @@ bool CoreStartEmulation(std::filesystem::path n64rom, std::filesystem::path n64d
                         m64p_ret = M64ERR_SYSTEM_FAIL;
                     }
                 }
-                else if (!fbneo_rt::Initialize(fbneoGame.c_str(), fbneoArchivePtrs, fbneoArchiveCount, 2))
+                else if (fbneoTarget)
                 {
-                    const std::string fbErr = CoreGetError();
-                    CoreSetError("CoreStartEmulation: FBNeo initialization failed" + (fbErr.empty() ? std::string() : (": " + fbErr)));
-                    m64p_ret = M64ERR_SYSTEM_FAIL;
-                    netplay_ret = false;
+                    if (!fbneo_rt::Initialize(fbneoGame.c_str(), fbneoArchivePtrs, fbneoArchiveCount, 2))
+                    {
+                        const std::string fbErr = CoreGetError();
+                        CoreSetError("CoreStartEmulation: FBNeo initialization failed" + (fbErr.empty() ? std::string() : (": " + fbErr)));
+                        m64p_ret = M64ERR_SYSTEM_FAIL;
+                        netplay_ret = false;
+                    }
+                    else
+                    {
+                        s_FbneoActive = true;
+                        netplay_ret = rmgk_gekko::start_p2p_session("rmgk-gekko",
+                            2, 4, player, static_cast<unsigned short>(port),
+                            remoteAddress.c_str(), static_cast<unsigned short>(remotePort), frameDelay, predictionWindow);
+                        if (!netplay_ret)
+                        {
+                            if (CoreGetError().empty())
+                            {
+                                CoreSetError("CoreStartEmulation: GekkoNet session initialization failed");
+                            }
+                            m64p_ret = M64ERR_SYSTEM_FAIL;
+                        }
+                    }
                 }
                 else
                 {
-                    s_FbneoActive = true;
+                    // Nintendo 64: the ROM is already open and the plugins are
+                    // attached, so only the GekkoNet session is left to start.
+                    // The mupen64plus rollback runtime is selected at the top of
+                    // this function.
                     netplay_ret = rmgk_gekko::start_p2p_session("rmgk-gekko",
-                        2, 4, player, static_cast<unsigned short>(port),
-                        remoteAddress.c_str(), static_cast<unsigned short>(remotePort), frameDelay, predictionWindow);
+                        2, static_cast<int>(sizeof(uint32_t)), player,
+                        static_cast<unsigned short>(port), remoteAddress.c_str(),
+                        static_cast<unsigned short>(remotePort), frameDelay, predictionWindow);
                     if (!netplay_ret)
                     {
                         if (CoreGetError().empty())
@@ -1668,18 +1700,39 @@ bool CoreStartEmulation(std::filesystem::path n64rom, std::filesystem::path n64d
                         m64p_ret = M64ERR_SYSTEM_FAIL;
                     }
                 }
-                else if (!fbneo_rt::Initialize(fbneoGame.c_str(), fbneoArchivePtrs, fbneoArchiveCount, totalSeats))
+                else if (fbneoTarget)
                 {
-                    const std::string fbErr = CoreGetError();
-                    CoreSetError("CoreStartEmulation: FBNeo initialization failed" + (fbErr.empty() ? std::string() : (": " + fbErr)));
-                    m64p_ret = M64ERR_SYSTEM_FAIL;
-                    netplay_ret = false;
+                    if (!fbneo_rt::Initialize(fbneoGame.c_str(), fbneoArchivePtrs, fbneoArchiveCount, totalSeats))
+                    {
+                        const std::string fbErr = CoreGetError();
+                        CoreSetError("CoreStartEmulation: FBNeo initialization failed" + (fbErr.empty() ? std::string() : (": " + fbErr)));
+                        m64p_ret = M64ERR_SYSTEM_FAIL;
+                        netplay_ret = false;
+                    }
+                    else
+                    {
+                        s_FbneoActive = true;
+                        netplay_ret = rmgk_gekko::start_lobby_session("rmgk-gekko",
+                            totalSeats, 4,
+                            player, static_cast<unsigned short>(port),
+                            remotes.data(), static_cast<int>(remotes.size()),
+                            frameDelay, predictionWindow);
+                        if (!netplay_ret)
+                        {
+                            if (CoreGetError().empty())
+                            {
+                                CoreSetError("CoreStartEmulation: GekkoNet session initialization failed");
+                            }
+                            m64p_ret = M64ERR_SYSTEM_FAIL;
+                        }
+                    }
                 }
                 else
                 {
-                    s_FbneoActive = true;
+                    // Nintendo 64: every seat gets the 4-byte mupen64plus input
+                    // packet and the mupen rollback runtime drives the frames.
                     netplay_ret = rmgk_gekko::start_lobby_session("rmgk-gekko",
-                        totalSeats, 4,
+                        totalSeats, static_cast<int>(sizeof(uint32_t)),
                         player, static_cast<unsigned short>(port),
                         remotes.data(), static_cast<int>(remotes.size()),
                         frameDelay, predictionWindow);
@@ -1706,11 +1759,26 @@ bool CoreStartEmulation(std::filesystem::path n64rom, std::filesystem::path n64d
     }
 #endif // NETPLAY
 
+    // A synced session keeps the game's saves in memory, starting from the
+    // staged choose-your-save data (blank without one), so no player's own
+    // save files are read or changed. Offline play turns that off and uses the
+    // save files.
+    if (!CoreApplyNetplaySaveData(syncedSession))
+    {
+        if (!fbneoTarget && !psxTarget)
+        {
+            CoreClearCheats();
+            CoreDetachPlugins();
+            CoreApplyPluginSettings();
+            CoreCloseRom();
+        }
+        return false;
+    }
+
     bool rollbackExecute = false;
     if (localRollbackEnabled)
     {
         const bool det = rmgk_gekko::set_deterministic(true);
-        fprintf(stderr, "[FBNEO-DBG] local block enter det=%d\n", (int)det); fflush(stderr);
         if (!det)
         {
             m64p_ret = M64ERR_SYSTEM_FAIL;
@@ -1745,11 +1813,9 @@ bool CoreStartEmulation(std::filesystem::path n64rom, std::filesystem::path n64d
                     }
                 }
             }
-            else
+            else if (fbneoTarget)
             {
-                fprintf(stderr, "[FBNEO-DBG] calling fbneo_rt::Initialize game=%s archives=%d\n", fbneoGame.c_str(), fbneoArchiveCount); fflush(stderr);
                 const bool fbInit = fbneo_rt::Initialize(fbneoGame.c_str(), fbneoArchivePtrs, fbneoArchiveCount, 4);
-                fprintf(stderr, "[FBNEO-DBG] fbneo_rt::Initialize=%d err=%s\n", (int)fbInit, CoreGetError().c_str()); fflush(stderr);
                 if (!fbInit)
                 {
                     const std::string fbErr = CoreGetError();
@@ -1767,7 +1833,6 @@ bool CoreStartEmulation(std::filesystem::path n64rom, std::filesystem::path n64d
                     netplay_ret = rmgk_gekko::start_local_session("rmgk-gekko-local",
                         4, 4, 0);
                     rollbackExecute = netplay_ret;
-                    fprintf(stderr, "[FBNEO-DBG] start_local_session=%d err=%s\n", (int)netplay_ret, CoreGetError().c_str()); fflush(stderr);
                     if (!netplay_ret)
                     {
                         if (CoreGetError().empty())
@@ -1784,13 +1849,33 @@ bool CoreStartEmulation(std::filesystem::path n64rom, std::filesystem::path n64d
                     }
                 }
             }
+            else
+            {
+                // Nintendo 64 local rollback testing: the ROM is open and the
+                // plugins are attached, so the mupen64plus rollback runtime only
+                // needs a local GekkoNet session with 4-byte input packets.
+                netplay_ret = rmgk_gekko::start_local_session("rmgk-gekko-local",
+                    4, static_cast<int>(sizeof(uint32_t)), 0);
+                rollbackExecute = netplay_ret;
+                if (!netplay_ret)
+                {
+                    if (CoreGetError().empty())
+                    {
+                        CoreSetError("CoreStartEmulation: local GekkoNet session initialization failed");
+                    }
+                    m64p_ret = M64ERR_SYSTEM_FAIL;
+                }
+            }
         }
     }
 
-    // FBNeo / PS1 P2P/lobby GekkoNet sessions are driven by the rollback frame
-    // loop; there is no N64 ROM open, so the mupen64plus M64CMD_EXECUTE must not
-    // run for them (it would fail with a missing config parameter).
-    if (netplay && netplay_ret && (fbneoTarget || psxTarget))
+    // N64 P2P/lobby GekkoNet sessions are driven by the mupen64plus rollback
+    // frame loop; FBNeo / PS1 P2P/lobby sessions by their own runtimes. A legacy
+    // (Mupen64Plus built-in) or Kaillera session keeps the normal M64CMD_EXECUTE
+    // path.
+    if (netplay && netplay_ret &&
+        (fbneoTarget || psxTarget ||
+         address.rfind("GEKKO|", 0) == 0 || address.rfind("LOBBY|", 0) == 0))
     {
         rollbackExecute = true;
     }
@@ -1884,7 +1969,7 @@ bool CoreStartEmulation(std::filesystem::path n64rom, std::filesystem::path n64d
     // The frontend tears down its FBNeo video/audio output on the emulation
     // thread right after the frame loop ends, while its GL context is still
     // current.
-    if (rollbackExecute && s_fbneoStopCallback)
+    if (rollbackExecute && (fbneoTarget || psxTarget) && s_fbneoStopCallback)
     {
         s_fbneoStopCallback(s_fbneoStopUser);
     }
@@ -1905,9 +1990,9 @@ bool CoreStartEmulation(std::filesystem::path n64rom, std::filesystem::path n64d
     {
         libretro_rt::Shutdown();
         s_LibretroSessionActive = false;
-        // Hand the rollback surface back to FBNeo so an N64/arcade session
-        // started afterwards behaves exactly as before.
-        CoreRollbackSetCore(CoreRollbackCore::Fbneo);
+        // Hand the rollback surface back to the mupen64plus runtime so a later
+        // N64 session behaves exactly as before.
+        CoreRollbackSetCore(CoreRollbackCore::Mupen);
     }
 
     // Once the frame loop has returned the arcade session is over; clear the flag

@@ -34,6 +34,7 @@ set(RMG_CORE_SOURCES
     RomHeader.cpp
     Emulation.cpp
     SaveState.cpp
+    NetplaySave.cpp
     RollbackNetcode.cpp
     FbneoRuntime.cpp
     LibretroRuntime.cpp

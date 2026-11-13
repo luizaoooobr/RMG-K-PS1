@@ -9,21 +9,124 @@
  */
 #define CORE_INTERNAL
 #include "RollbackNetcode.hpp"
+#include "Emulation.hpp"
 #include "Error.hpp"
 #include "Library.hpp"
 #include "FbneoRuntime.hpp"
 #include "LibretroRuntime.hpp"
 
+#include "m64p/Api.hpp"
+
+// Must match the sentinels in mupen64plus-core's savestates.h.
+static const int kRollbackSaveFullSentinel = 0x46554c4c; /* 'FULL' */
+static const int kRollbackLoadDeferSentinel = 0x44454645; /* 'DEFE' */
+
 namespace
 {
-// FBNeo is the default so N64/arcade sessions keep the exact behaviour they had
-// before the libretro runtime existed.
-CoreRollbackCore g_core = CoreRollbackCore::Fbneo;
+// Mupen (Nintendo 64) is the default runtime: every path that existed before
+// the FBNeo/libretro runtimes keeps driving the in-process mupen64plus
+// rollback engine unless CoreStartEmulation explicitly selects another one.
+CoreRollbackCore g_core = CoreRollbackCore::Mupen;
+
+// --- mupen64plus runtime -------------------------------------------------
+//
+// These mirror the original CoreRollback* bodies: each one forwards to the
+// core through M64CMD_ROLLBACK_*, and the core owns the savestate buffers.
+
+bool mupen_save_state_into(unsigned char* buffer, int capacity, int& len, int& checksum, int frame, bool full)
+{
+    std::string error;
+    m64p_error ret;
+    m64p_rollback_state coreState = {};
+
+    if (!m64p::Core.IsHooked())
+    {
+        return false;
+    }
+
+    coreState.frame = frame;
+    coreState.buffer = buffer;
+    coreState.len = capacity;
+    coreState.checksum = full ? kRollbackSaveFullSentinel : 0;
+    ret = m64p::Core.DoCommand(M64CMD_ROLLBACK_SAVE_STATE, 0, &coreState);
+    if (ret != M64ERR_SUCCESS)
+    {
+        error = "CoreRollbackSaveGameState DoCommand(M64CMD_ROLLBACK_SAVE_STATE) Failed: ";
+        error += m64p::Core.ErrorMessage(ret);
+        CoreSetError(error);
+        return false;
+    }
+
+    len = coreState.len;
+    checksum = coreState.checksum;
+    return true;
+}
+
+bool mupen_save_state_alloc(unsigned char*& buffer, int& len, int& checksum, int frame, bool full)
+{
+    std::string error;
+    m64p_error ret;
+    m64p_rollback_state coreState = {};
+
+    if (!m64p::Core.IsHooked())
+    {
+        return false;
+    }
+
+    coreState.frame = frame;
+    coreState.buffer = nullptr;
+    coreState.len = 0;
+    coreState.checksum = full ? kRollbackSaveFullSentinel : 0;
+    ret = m64p::Core.DoCommand(M64CMD_ROLLBACK_SAVE_STATE, 0, &coreState);
+    if (ret != M64ERR_SUCCESS)
+    {
+        error = "CoreRollbackSaveGameState DoCommand(M64CMD_ROLLBACK_SAVE_STATE) Failed: ";
+        error += m64p::Core.ErrorMessage(ret);
+        CoreSetError(error);
+        return false;
+    }
+
+    buffer = coreState.buffer;
+    len = coreState.len;
+    checksum = coreState.checksum;
+    return true;
+}
+
+bool mupen_load_state(const unsigned char* buffer, int len, int frame, bool deferred, int& checksum)
+{
+    std::string error;
+    m64p_error ret;
+    m64p_rollback_state coreState = {};
+
+    if (!m64p::Core.IsHooked())
+    {
+        return false;
+    }
+
+    coreState.buffer = const_cast<unsigned char*>(buffer);
+    coreState.len = len;
+    coreState.checksum = deferred ? kRollbackLoadDeferSentinel : checksum;
+    coreState.frame = frame;
+    ret = m64p::Core.DoCommand(M64CMD_ROLLBACK_LOAD_STATE, 0, &coreState);
+    if (ret != M64ERR_SUCCESS)
+    {
+        error = "CoreRollbackLoadGameState DoCommand(M64CMD_ROLLBACK_LOAD_STATE) Failed: ";
+        error += m64p::Core.ErrorMessage(ret);
+        CoreSetError(error);
+        return false;
+    }
+
+    return true;
+}
+
+// --- runtime dispatch ----------------------------------------------------
 
 bool runtime_initialized()
 {
     switch (g_core)
     {
+        case CoreRollbackCore::Mupen:
+            return m64p::Core.IsHooked();
         case CoreRollbackCore::Libretro:
             return libretro_rt::IsInitialized();
         case CoreRollbackCore::Fbneo:
@@ -32,10 +135,12 @@ bool runtime_initialized()
     }
 }
 
-bool runtime_save_state(unsigned char* buffer, int capacity, int& len, int& checksum, int frame)
+bool runtime_save_state(unsigned char* buffer, int capacity, int& len, int& checksum, int frame, bool full)
 {
     switch (g_core)
     {
+        case CoreRollbackCore::Mupen:
+            return mupen_save_state_into(buffer, capacity, len, checksum, frame, full);
         case CoreRollbackCore::Libretro:
             return libretro_rt::SaveStateInto(buffer, capacity, len, checksum, frame);
         case CoreRollbackCore::Fbneo:
@@ -44,10 +149,12 @@ bool runtime_save_state(unsigned char* buffer, int capacity, int& len, int& chec
     }
 }
 
-bool runtime_save_state_alloc(unsigned char*& buffer, int& len, int& checksum, int frame)
+bool runtime_save_state_alloc(unsigned char*& buffer, int& len, int& checksum, int frame, bool full)
 {
     switch (g_core)
     {
+        case CoreRollbackCore::Mupen:
+            return mupen_save_state_alloc(buffer, len, checksum, frame, full);
         case CoreRollbackCore::Libretro:
             return libretro_rt::SaveStateAlloc(buffer, len, checksum, frame);
         case CoreRollbackCore::Fbneo:
@@ -56,10 +163,12 @@ bool runtime_save_state_alloc(unsigned char*& buffer, int& len, int& checksum, i
     }
 }
 
-bool runtime_load_state(const unsigned char* buffer, int len)
+bool runtime_load_state(const unsigned char* buffer, int len, int frame, bool deferred, int& checksum)
 {
     switch (g_core)
     {
+        case CoreRollbackCore::Mupen:
+            return mupen_load_state(buffer, len, frame, deferred, checksum);
         case CoreRollbackCore::Libretro:
             return libretro_rt::LoadState(buffer, len);
         case CoreRollbackCore::Fbneo:
@@ -72,6 +181,8 @@ bool runtime_run_frame(int flags)
 {
     switch (g_core)
     {
+        case CoreRollbackCore::Mupen:
+            return m64p::Core.DoCommand(M64CMD_ROLLBACK_RUN_FRAME, flags, nullptr) == M64ERR_SUCCESS;
         case CoreRollbackCore::Libretro:
             return libretro_rt::RunFrame(flags);
         case CoreRollbackCore::Fbneo:
@@ -109,7 +220,7 @@ bool CoreRollbackSaveGameStateInto(CoreRollbackState& state, unsigned char* buff
     {
         int len = 0;
         int checksum = 0;
-        if (!runtime_save_state(buffer, capacity, len, checksum, frame))
+        if (!runtime_save_state(buffer, capacity, len, checksum, frame, false))
         {
             error = "CoreRollbackSaveGameStateInto runtime SaveStateInto Failed";
             CoreSetError(error);
@@ -126,7 +237,7 @@ bool CoreRollbackSaveGameStateInto(CoreRollbackState& state, unsigned char* buff
         unsigned char* allocBuf = nullptr;
         int len = 0;
         int checksum = 0;
-        if (!runtime_save_state_alloc(allocBuf, len, checksum, frame))
+        if (!runtime_save_state_alloc(allocBuf, len, checksum, frame, false))
         {
             error = "CoreRollbackSaveGameStateInto runtime SaveStateAlloc Failed";
             CoreSetError(error);
@@ -142,8 +253,9 @@ bool CoreRollbackSaveGameStateInto(CoreRollbackState& state, unsigned char* buff
 
 bool CoreRollbackSaveFullStateInto(CoreRollbackState& state, unsigned char* buffer, int capacity, int frame)
 {
-    // Both runtimes expose one complete, self-contained serializer state: the
-    // stripped/full distinction only exists for FBNeo's BurnStateCompress.
+    // Mupen distinguishes a stripped rollback state from a full normal-format
+    // one (TLB LUT included), and the spectate keyframe needs the full one.
+    // The other runtimes expose a single self-contained serializer state.
     std::string error;
 
     if (!runtime_initialized())
@@ -155,7 +267,7 @@ bool CoreRollbackSaveFullStateInto(CoreRollbackState& state, unsigned char* buff
     {
         int len = 0;
         int checksum = 0;
-        if (!runtime_save_state(buffer, capacity, len, checksum, frame))
+        if (!runtime_save_state(buffer, capacity, len, checksum, frame, true))
         {
             error = "CoreRollbackSaveFullStateInto runtime SaveStateInto Failed";
             CoreSetError(error);
@@ -172,7 +284,7 @@ bool CoreRollbackSaveFullStateInto(CoreRollbackState& state, unsigned char* buff
         unsigned char* allocBuf = nullptr;
         int len = 0;
         int checksum = 0;
-        if (!runtime_save_state_alloc(allocBuf, len, checksum, frame))
+        if (!runtime_save_state_alloc(allocBuf, len, checksum, frame, true))
         {
             error = "CoreRollbackSaveFullStateInto runtime SaveStateAlloc Failed";
             CoreSetError(error);
@@ -195,7 +307,8 @@ bool CoreRollbackLoadGameState(const CoreRollbackState& state)
         return false;
     }
 
-    if (!runtime_load_state(state.buffer, state.len))
+    int checksum = state.checksum;
+    if (!runtime_load_state(state.buffer, state.len, state.frame, false, checksum))
     {
         error = "CoreRollbackLoadGameState runtime LoadState Failed";
         CoreSetError(error);
@@ -207,6 +320,7 @@ bool CoreRollbackLoadGameState(const CoreRollbackState& state)
 
 bool CoreRollbackLoadGameStateDeferred(const CoreRollbackState& state)
 {
+    // Only mupen64plus can defer a load to its next safe interrupt boundary.
     // The libretro runtime has no deferred load: retro_unserialize is synchronous
     // and frame-aligned, which is exactly what the rollback layer needs.
     std::string error;
@@ -216,7 +330,8 @@ bool CoreRollbackLoadGameStateDeferred(const CoreRollbackState& state)
         return false;
     }
 
-    if (!runtime_load_state(state.buffer, state.len))
+    int checksum = state.checksum;
+    if (!runtime_load_state(state.buffer, state.len, state.frame, true, checksum))
     {
         error = "CoreRollbackLoadGameStateDeferred runtime LoadState Failed";
         CoreSetError(error);
@@ -230,7 +345,18 @@ void CoreRollbackFreeGameState(CoreRollbackState& state)
 {
     if (state.buffer != nullptr)
     {
-        free(state.buffer);
+        if (g_core == CoreRollbackCore::Mupen)
+        {
+            // The mupen64plus core allocated the buffer, so only it can free it.
+            if (m64p::Core.IsHooked())
+            {
+                m64p::Core.DoCommand(M64CMD_ROLLBACK_FREE_STATE, 0, state.buffer);
+            }
+        }
+        else
+        {
+            free(state.buffer);
+        }
     }
 
     state = {};
@@ -250,9 +376,31 @@ bool CoreRollbackSampleInput(void* values, int size, int players)
         return false;
     }
 
-    const bool ok = (g_core == CoreRollbackCore::Libretro)
-        ? libretro_rt::SampleInput(values, size, players)
-        : fbneo_rt::SampleInput(values, size, players);
+    bool ok = false;
+    if (g_core == CoreRollbackCore::Mupen)
+    {
+        m64p_rollback_input_sample sample = {};
+        sample.values = values;
+        sample.size = size;
+        sample.players = players;
+        const m64p_error ret = m64p::Core.DoCommand(M64CMD_ROLLBACK_SAMPLE_INPUT, 0, &sample);
+        if (ret != M64ERR_SUCCESS)
+        {
+            error = "CoreRollbackSampleInput DoCommand(M64CMD_ROLLBACK_SAMPLE_INPUT) Failed: ";
+            error += m64p::Core.ErrorMessage(ret);
+            CoreSetError(error);
+            return false;
+        }
+        ok = true;
+    }
+    else if (g_core == CoreRollbackCore::Libretro)
+    {
+        ok = libretro_rt::SampleInput(values, size, players);
+    }
+    else
+    {
+        ok = fbneo_rt::SampleInput(values, size, players);
+    }
 
     if (!ok)
     {
@@ -271,7 +419,19 @@ bool CoreRollbackSetInputCallback(CoreRollbackInputCallback callback)
         return false;
     }
 
-    if (g_core == CoreRollbackCore::Libretro)
+    if (g_core == CoreRollbackCore::Mupen)
+    {
+        const m64p_error ret = m64p::Core.DoCommand(
+            M64CMD_ROLLBACK_SET_INPUT_CALLBACK, 0, reinterpret_cast<void*>(callback));
+        if (ret != M64ERR_SUCCESS)
+        {
+            std::string error = "CoreRollbackSetInputCallback DoCommand(M64CMD_ROLLBACK_SET_INPUT_CALLBACK) Failed: ";
+            error += m64p::Core.ErrorMessage(ret);
+            CoreSetError(error);
+            return false;
+        }
+    }
+    else if (g_core == CoreRollbackCore::Libretro)
     {
         libretro_rt::SetInputCallback(callback);
     }
@@ -289,7 +449,18 @@ bool CoreRollbackSetInputPlayers(int players)
         return false;
     }
 
-    if (g_core == CoreRollbackCore::Libretro)
+    if (g_core == CoreRollbackCore::Mupen)
+    {
+        const m64p_error ret = m64p::Core.DoCommand(M64CMD_ROLLBACK_SET_INPUT_PLAYERS, players, nullptr);
+        if (ret != M64ERR_SUCCESS)
+        {
+            std::string error = "CoreRollbackSetInputPlayers DoCommand(M64CMD_ROLLBACK_SET_INPUT_PLAYERS) Failed: ";
+            error += m64p::Core.ErrorMessage(ret);
+            CoreSetError(error);
+            return false;
+        }
+    }
+    else if (g_core == CoreRollbackCore::Libretro)
     {
         libretro_rt::SetInputPlayers(players);
     }
@@ -306,7 +477,24 @@ bool CoreRollbackSetDeterministic(bool enabled)
     // request and is safe to call before initialization. Requiring an
     // initialized core here made every fresh session (local or netplay) fail
     // its startup check.
-    if (g_core == CoreRollbackCore::Libretro)
+    if (g_core == CoreRollbackCore::Mupen)
+    {
+        if (!m64p::Core.IsHooked())
+        {
+            return false;
+        }
+
+        const m64p_error ret = m64p::Core.DoCommand(
+            M64CMD_ROLLBACK_SET_DETERMINISTIC, enabled ? 1 : 0, nullptr);
+        if (ret != M64ERR_SUCCESS)
+        {
+            std::string error = "CoreRollbackSetDeterministic DoCommand(M64CMD_ROLLBACK_SET_DETERMINISTIC) Failed: ";
+            error += m64p::Core.ErrorMessage(ret);
+            CoreSetError(error);
+            return false;
+        }
+    }
+    else if (g_core == CoreRollbackCore::Libretro)
     {
         libretro_rt::SetNetgameMode(enabled);
     }
@@ -324,7 +512,19 @@ bool CoreRollbackSetVerboseStats(bool enabled)
         return false;
     }
 
-    if (g_core == CoreRollbackCore::Fbneo)
+    if (g_core == CoreRollbackCore::Mupen)
+    {
+        const m64p_error ret = m64p::Core.DoCommand(
+            M64CMD_ROLLBACK_SET_VERBOSE_STATS, enabled ? 1 : 0, nullptr);
+        if (ret != M64ERR_SUCCESS)
+        {
+            std::string error = "CoreRollbackSetVerboseStats DoCommand(M64CMD_ROLLBACK_SET_VERBOSE_STATS) Failed: ";
+            error += m64p::Core.ErrorMessage(ret);
+            CoreSetError(error);
+            return false;
+        }
+    }
+    else if (g_core == CoreRollbackCore::Fbneo)
     {
         fbneo_rt::SetVerboseStats(enabled);
     }
@@ -338,7 +538,19 @@ bool CoreRollbackSetTimesyncScale(double scale)
         return false;
     }
 
-    if (g_core == CoreRollbackCore::Fbneo)
+    if (g_core == CoreRollbackCore::Mupen)
+    {
+        const m64p_error ret = m64p::Core.DoCommand(
+            M64CMD_ROLLBACK_SET_TIMESYNC_SCALE, 0, &scale);
+        if (ret != M64ERR_SUCCESS)
+        {
+            std::string error = "CoreRollbackSetTimesyncScale DoCommand(M64CMD_ROLLBACK_SET_TIMESYNC_SCALE) Failed: ";
+            error += m64p::Core.ErrorMessage(ret);
+            CoreSetError(error);
+            return false;
+        }
+    }
+    else if (g_core == CoreRollbackCore::Fbneo)
     {
         fbneo_rt::SetTimesyncScale(scale);
     }
@@ -350,6 +562,19 @@ bool CoreRollbackExecute(m64p_rollback_execute_callbacks& callbacks)
     if (!runtime_initialized())
     {
         return false;
+    }
+
+    if (g_core == CoreRollbackCore::Mupen)
+    {
+        const m64p_error ret = m64p::Core.DoCommand(M64CMD_ROLLBACK_EXECUTE, 0, &callbacks);
+        if (ret != M64ERR_SUCCESS)
+        {
+            std::string error = "CoreRollbackExecute DoCommand(M64CMD_ROLLBACK_EXECUTE) Failed: ";
+            error += m64p::Core.ErrorMessage(ret);
+            CoreSetError(error);
+            return false;
+        }
+        return true;
     }
 
     if (g_core == CoreRollbackCore::Libretro)
@@ -389,7 +614,22 @@ bool CoreRollbackGetRunFrameStats(CoreRollbackRunFrameStats& stats)
         return true;
     }
 
-    fbneo_rt::GetRunFrameStats(coreStats);
+    if (g_core == CoreRollbackCore::Mupen)
+    {
+        const m64p_error ret = m64p::Core.DoCommand(
+            M64CMD_ROLLBACK_GET_RUN_FRAME_STATS, 0, &coreStats);
+        if (ret != M64ERR_SUCCESS)
+        {
+            std::string error = "CoreRollbackGetRunFrameStats DoCommand(M64CMD_ROLLBACK_GET_RUN_FRAME_STATS) Failed: ";
+            error += m64p::Core.ErrorMessage(ret);
+            CoreSetError(error);
+            return false;
+        }
+    }
+    else
+    {
+        fbneo_rt::GetRunFrameStats(coreStats);
+    }
 
     stats.totalUs = coreStats.total_us;    stats.r4300Us = coreStats.r4300_us;
     stats.viUs = coreStats.vi_us;
