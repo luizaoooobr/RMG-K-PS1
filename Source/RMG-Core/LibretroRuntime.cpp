@@ -17,6 +17,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdarg>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -779,6 +780,86 @@ uint32_t fnv1a64_lanes(const unsigned char* data, size_t len)
     return static_cast<uint32_t>(hash);
 }
 
+// Layout of the state swanstation writes (src/core/save_state_version.h). The
+// core reports an 11 MB upper bound through retro_serialize_size() but only
+// writes the header, the disc display name and the machine data (~4.3 MB for
+// Street Fighter EX2), leaving the rest of the buffer untouched.
+struct SwanStateHeader
+{
+    uint32_t magic;
+    uint32_t version;
+    uint8_t  title[128];
+    uint8_t  game_code[32];
+    uint32_t media_filename_length;
+    uint32_t offset_to_media_filename;
+    uint32_t media_subimage_index;
+    uint32_t unused_offset_to_playlist_filename;
+    uint32_t screenshot_width;
+    uint32_t screenshot_height;
+    uint32_t screenshot_size;
+    uint32_t offset_to_screenshot;
+    uint32_t data_compression_type;
+    uint32_t data_compressed_size;
+    uint32_t data_uncompressed_size;
+    uint32_t offset_to_data;
+};
+static_assert(sizeof(SwanStateHeader) == 216, "swanstation SAVE_STATE_HEADER layout changed");
+
+constexpr uint32_t kSwanStateMagic       = 0x43435544u;              // "DUCC"
+constexpr uint64_t kSwanDiskTrailerMagic = 0x435349444e415753ull;    // "SWANDISC"
+
+// Number of bytes swanstation actually wrote into `buffer`: the machine data
+// plus the disc trailer the libretro layer appends right after it. The state
+// buffer itself is reused between saves, so its tail still holds bytes from an
+// older, longer state; those bytes are not machine state and must not be
+// hashed. Hashing only this prefix is equivalent to zeroing and hashing the
+// whole buffer for two peers running the same core build, and it skips both the
+// 11 MB memset and ~7 MB of hashing per save. Returns 0 when the buffer is not
+// a swanstation state (unknown core or a layout change), in which case the
+// caller falls back to the normalized whole-buffer hash.
+size_t swanstation_written_bytes(const unsigned char* buffer, size_t size)
+{
+    if (size < sizeof(SwanStateHeader))
+    {
+        return 0;
+    }
+
+    SwanStateHeader header;
+    std::memcpy(&header, buffer, sizeof(header));
+    if (header.magic != kSwanStateMagic || header.data_compression_type != 0)
+    {
+        return 0;
+    }
+
+    const uint64_t data_end =
+        static_cast<uint64_t>(header.offset_to_data) + static_cast<uint64_t>(header.data_uncompressed_size);
+    if (data_end < sizeof(SwanStateHeader) || data_end > size)
+    {
+        return 0;
+    }
+
+    size_t written = static_cast<size_t>(data_end);
+
+    // DiskStateHeader: magic(8) version(4) flags(4) index(4) path_length(4).
+    constexpr size_t kDiskHeaderSize = 24;
+    if (size - written >= kDiskHeaderSize)
+    {
+        uint64_t trailer_magic = 0;
+        std::memcpy(&trailer_magic, buffer + written, sizeof(trailer_magic));
+        if (trailer_magic == kSwanDiskTrailerMagic)
+        {
+            uint32_t path_length = 0;
+            std::memcpy(&path_length, buffer + written + 20, sizeof(path_length));
+            if (path_length <= size - written - kDiskHeaderSize)
+            {
+                written += kDiskHeaderSize + path_length;
+            }
+        }
+    }
+
+    return written;
+}
+
 void reset_audio()
 {
     g_audio.clear();
@@ -1314,15 +1395,18 @@ bool SaveStateInto(unsigned char* buffer, int capacity, int& outLen, int& outChe
     }
 
     // retro_serialize_size() is an upper bound, not the length the core writes:
-    // swanstation reports 11.5 MB and fills only the first ~4.3 MB, and the
-    // filled length moves by a few bytes from frame to frame. Nothing promises
-    // the rest of the buffer is initialised (SaveStateAlloc hands us malloc'd
-    // memory), so the tail has to be normalised before it can be hashed -- the
-    // same machine state would otherwise checksum differently. Zeroing the
-    // whole buffer is ~0.6 ms and lets the checksum cover every byte, so both
-    // peers hash identical input without the extra scan that used to find the
-    // end of the written prefix (~1.6 ms per frame).
-    std::memset(buffer, 0, size);
+    // swanstation reports 11 MB and fills only the first ~4.3 MB. Unknown cores
+    // can leave the tail uninitialised (SaveStateAlloc hands us malloc'd
+    // memory), so those keep the old normalisation: zero the whole buffer
+    // before serialising, then hash everything. SwanStation is trimmed below,
+    // which is what the PS1 rollback path uses once per frame.
+    const bool swanStation =
+        g_coreName.find("SwanStation") != std::string::npos ||
+        g_corePath.find("swanstation") != std::string::npos;
+    if (!swanStation)
+    {
+        std::memset(buffer, 0, size);
+    }
 
     if (!p_retro_serialize(buffer, size))
     {
@@ -1331,8 +1415,28 @@ bool SaveStateInto(unsigned char* buffer, int capacity, int& outLen, int& outChe
     }
 
     // outLen stays the full size: it is the length handed back to LoadState().
-    outLen      = static_cast<int>(size);
-    outChecksum = static_cast<int>(fnv1a64_lanes(buffer, size));
+    outLen = static_cast<int>(size);
+
+    size_t hashed = size;
+    if (swanStation)
+    {
+        const size_t written = swanstation_written_bytes(buffer, size);
+        if (written >= sizeof(SwanStateHeader))
+        {
+            hashed = written;
+        }
+        else
+        {
+            static std::atomic<bool> warned{false};
+            if (!warned.exchange(true))
+            {
+                libretro_log("rollback state has an unexpected swanstation layout; "
+                             "hashing the whole %zu-byte buffer", size);
+            }
+        }
+    }
+
+    outChecksum = static_cast<int>(fnv1a64_lanes(buffer, hashed));
     return true;
 }
 

@@ -88,17 +88,25 @@ constexpr unsigned int kStateCapacityMinBytes = 1u * 1024u * 1024u;
 constexpr unsigned int kStateCapacityMaxBytes = 64u * 1024u * 1024u;
 unsigned int g_GekkoStateCapacity = kFbneoStateCapacityBytes;
 
-// How often GekkoNet snapshot the state. A libretro core (the PS1/swanstation
-// path) writes several MB per save and the callback runs on the emulation
-// thread, so saving every frame cost ~5 ms of each 16.7 ms frame and every
-// rollback resimulated with one save per frame - a stall that rewound thirty
-// frames froze the picture for hundreds of milliseconds. Limited mode keeps two
-// states and saves once per prediction window instead, which drops the steady
-// cost to well under a millisecond and makes a rollback save once instead of
-// once per resimulated frame. FBNeo and Mupen keep the per-frame cadence: their
-// states are small (283 KB / 8.4 MB), per-frame saves keep GekkoNet's desync
-// detection enabled (limited mode disables it), and the FBNeo sound chips are
-// re-rendered across a long rewind, which shows up as repeated audio.
+// How often GekkoNet snapshots the state. The libretro (PS1/swanstation) path
+// used to save once per prediction window in "limited" mode, which keeps only
+// two states. That looked cheap in isolation, but with two states a rollback
+// has to restart from the last periodic save (up to a full prediction window,
+// 7 frames, behind the mispredicted input) and resimulate every frame in
+// between. On a real session with ~20 rollbacks/s that turned into hundreds of
+// extra emulated frames per second and the game dropped to the mid-40s (the
+// user's Street Fighter EX2 report; the 2026-11-13 session log on the Batocera
+// box has 8476 load-state events in a single ~6 minute match).
+//
+// Limited saving also cannot run GekkoNet's desync detection (it is forced off
+// when limited_saving is set), so nothing was gained there either. The PS1 path
+// keeps the per-frame cadence now: a rollback restarts one frame before the
+// mispredicted input, and the save itself is cheap because SaveStateInto only
+// hashes the bytes the core actually wrote (~4.3 MB instead of the 11 MB upper
+// bound). RMGK_PS1_LIMITED_SAVING=1 still selects the old cadence for
+// experiments; FBNeo and Mupen never used it: their states are small (283 KB /
+// 8.4 MB), per-frame saves keep desync detection on, and the FBNeo sound chips
+// are re-rendered across a long rewind, which shows up as repeated audio.
 bool limited_saving_for_runtime()
 {
     if (CoreRollbackGetCore() != CoreRollbackCore::Libretro)
@@ -107,7 +115,7 @@ bool limited_saving_for_runtime()
     }
 
     const char* env = std::getenv("RMGK_PS1_LIMITED_SAVING");
-    return env == nullptr || std::strcmp(env, "0") != 0;
+    return env != nullptr && (std::strcmp(env, "1") == 0 || std::strcmp(env, "true") == 0);
 }
 
 constexpr int kGekkoMaxLoggedFrames = 600;
