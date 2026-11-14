@@ -87,6 +87,29 @@ constexpr unsigned int kMupenStateCapacityBytes = rmgk_gekko::kMupenStateCapacit
 constexpr unsigned int kStateCapacityMinBytes = 1u * 1024u * 1024u;
 constexpr unsigned int kStateCapacityMaxBytes = 64u * 1024u * 1024u;
 unsigned int g_GekkoStateCapacity = kFbneoStateCapacityBytes;
+
+// How often GekkoNet snapshot the state. A libretro core (the PS1/swanstation
+// path) writes several MB per save and the callback runs on the emulation
+// thread, so saving every frame cost ~5 ms of each 16.7 ms frame and every
+// rollback resimulated with one save per frame - a stall that rewound thirty
+// frames froze the picture for hundreds of milliseconds. Limited mode keeps two
+// states and saves once per prediction window instead, which drops the steady
+// cost to well under a millisecond and makes a rollback save once instead of
+// once per resimulated frame. FBNeo and Mupen keep the per-frame cadence: their
+// states are small (283 KB / 8.4 MB), per-frame saves keep GekkoNet's desync
+// detection enabled (limited mode disables it), and the FBNeo sound chips are
+// re-rendered across a long rewind, which shows up as repeated audio.
+bool limited_saving_for_runtime()
+{
+    if (CoreRollbackGetCore() != CoreRollbackCore::Libretro)
+    {
+        return false;
+    }
+
+    const char* env = std::getenv("RMGK_PS1_LIMITED_SAVING");
+    return env == nullptr || std::strcmp(env, "0") != 0;
+}
+
 constexpr int kGekkoMaxLoggedFrames = 600;
 constexpr int kGekkoWaitSleepUs = 1000;
 // PreciseWaitFor busy-spins this tail only; the remainder is a kernel sleep.
@@ -3319,13 +3342,10 @@ bool rmgk_gekko::start_p2p_session(const char* gameName, int players, int inputS
     config.input_prediction_window = static_cast<unsigned char>(clampedPredictionWindow);
     config.input_size = static_cast<unsigned int>(inputSize);
     config.state_size = g_GekkoStateCapacity;
-    // BISECT: restore the first-commit rollback cadence. With limited_saving
-    // the ring keeps only 2 states and saves once per prediction window, so a
-    // rewind re-simulates a much longer span; for FBNeo that span re-renders
-    // the sound chips and shows up as repeated/looping audio. Saving every
-    // frame (as before 142e3c1) rewinds exactly. The 2 MB capacity is kept so
-    // the 9 buffers stay ~18 MB instead of the original ~216 MB.
-    config.limited_saving = false;
+    // Per-runtime save cadence; see limited_saving_for_runtime(). Desync
+    // detection is still requested everywhere, but GekkoNet disables it on its
+    // own in limited mode because unsaved frames have no checksum to compare.
+    config.limited_saving = limited_saving_for_runtime();
     config.desync_detection = true;
     config.check_distance = 10;
     gekko_start(g_GekkoSession, &config);
@@ -3580,13 +3600,10 @@ bool rmgk_gekko::start_lobby_session(const char* gameName, int players, int inpu
     config.input_prediction_window = static_cast<unsigned char>(clampedPredictionWindow);
     config.input_size = static_cast<unsigned int>(inputSize);
     config.state_size = g_GekkoStateCapacity;
-    // BISECT: restore the first-commit rollback cadence. With limited_saving
-    // the ring keeps only 2 states and saves once per prediction window, so a
-    // rewind re-simulates a much longer span; for FBNeo that span re-renders
-    // the sound chips and shows up as repeated/looping audio. Saving every
-    // frame (as before 142e3c1) rewinds exactly. The 2 MB capacity is kept so
-    // the 9 buffers stay ~18 MB instead of the original ~216 MB.
-    config.limited_saving = false;
+    // Per-runtime save cadence; see limited_saving_for_runtime(). Desync
+    // detection is still requested everywhere, but GekkoNet disables it on its
+    // own in limited mode because unsaved frames have no checksum to compare.
+    config.limited_saving = limited_saving_for_runtime();
     config.desync_detection = true;
     config.check_distance = 10;
     gekko_start(g_GekkoSession, &config);
@@ -3824,13 +3841,10 @@ bool rmgk_gekko::start_local_session(const char* gameName, int players, int inpu
     config.input_prediction_window = static_cast<unsigned char>(predictionWindow);
     config.input_size = static_cast<unsigned int>(inputSize);
     config.state_size = g_GekkoStateCapacity;
-    // BISECT: restore the first-commit rollback cadence. With limited_saving
-    // the ring keeps only 2 states and saves once per prediction window, so a
-    // rewind re-simulates a much longer span; for FBNeo that span re-renders
-    // the sound chips and shows up as repeated/looping audio. Saving every
-    // frame (as before 142e3c1) rewinds exactly. The 2 MB capacity is kept so
-    // the 9 buffers stay ~18 MB instead of the original ~216 MB.
-    config.limited_saving = false;
+    // Per-runtime save cadence; see limited_saving_for_runtime(). Desync
+    // detection is still requested everywhere, but GekkoNet disables it on its
+    // own in limited mode because unsaved frames have no checksum to compare.
+    config.limited_saving = limited_saving_for_runtime();
     config.desync_detection = true;
     config.check_distance = 10;
     gekko_start(g_GekkoSession, &config);
