@@ -222,6 +222,18 @@ bool ensure_lib_init()
 std::vector<uint8_t>   g_videoBuffer;
 VideoFrame             g_videoFrame;
 
+// Drivers flagged BDF_16BIT_ONLY (Mega Drive/32X/Sega CD, CPS3, Cave, GBA...)
+// render RGB565 straight into pBurnDraw; everyone else renders XRGB8888. The
+// render buffer keeps the driver's native depth and the presenter always gets
+// 32 bpp, so g_displayBuffer holds the converted frame when the native depth is
+// 16 (see convert_native_to_display). Feeding RGB565 to the 32 bpp presenter
+// packs two source pixels into one word: the picture comes out split in two
+// (one half per scanline) with the channels scrambled.
+std::vector<uint8_t>   g_displayBuffer;
+int                    g_nativeBpp = 4;
+int                    g_fullWidth = 0;
+int                    g_fullHeight = 0;
+
 std::vector<int16_t>   g_soundBuffer;
 int                    g_soundFrames = 0;
 
@@ -443,6 +455,24 @@ std::string driver_rom_id(const std::string& normalizedName)
 UINT32 __cdecl fbneo_highcol32(INT32 r, INT32 g, INT32 b, INT32 /* i */)
 {
     return ((UINT32)r << 16) | ((UINT32)g << 8) | (UINT32)b;
+}
+
+// 16-bpp counterpart for BDF_16BIT_ONLY drivers. Their palette arrays are
+// UINT16, so a 32-bpp converter gets truncated and every colour comes out
+// wrong (the Mega Drive stores RGB565 samples in UINT16 LUTs). Same component
+// order as FBNeo's own HighCol16 / misc.cpp.
+UINT32 __cdecl fbneo_highcol16(INT32 r, INT32 g, INT32 b, INT32 /* i */)
+{
+    return ((UINT32)(r << 8) & 0xf800) | ((UINT32)(g << 3) & 0x07e0) | ((UINT32)(b >> 3) & 0x001f);
+}
+
+// RGB565 -> 0x00RRGGBB, matching fbneo_highcol32's component order.
+static inline uint32_t rgb565_to_xrgb8888(uint16_t p)
+{
+    const uint32_t r = ((p >> 11) & 0x1f);
+    const uint32_t g = ((p >> 5) & 0x3f);
+    const uint32_t b = (p & 0x1f);
+    return (((r << 3) | (r >> 2)) << 16) | (((g << 2) | (g >> 4)) << 8) | ((b << 3) | (b >> 2));
 }
 
 // FBNeo's BurnLoadRomExt() asks the application to decode ROM index i into the
@@ -1146,6 +1176,91 @@ void build_dir_file_table()
     add_dir_files(dir.parent_path() / "bios");          // ...and <root>/../bios (Batocera)
 }
 
+// Allocate the render buffer at the driver's native depth and point the
+// presenter at the 32-bpp frame. `fw` x `fh` is the full drawable buffer and
+// `vw` x `vh` the visible rectangle the UI shows (top-left of the buffer for
+// horizontal drivers).
+void configure_video_buffers(INT32 fw, INT32 fh, INT32 vw, INT32 vh)
+{
+    g_videoBuffer.assign((size_t)fw * (size_t)fh * (size_t)g_nativeBpp, 0);
+    nBurnBpp   = g_nativeBpp;
+    nBurnPitch = fw * g_nativeBpp;
+    pBurnDraw  = g_videoBuffer.data();
+
+    g_fullWidth  = fw;
+    g_fullHeight = fh;
+
+    if (g_nativeBpp == 2)
+    {
+        g_displayBuffer.assign((size_t)fw * (size_t)fh * 4, 0);
+        g_videoFrame.pixels = g_displayBuffer.data();
+    }
+    else
+    {
+        g_displayBuffer.clear();
+        g_videoFrame.pixels = g_videoBuffer.data();
+    }
+
+    g_videoFrame.width  = vw;
+    g_videoFrame.height = vh;
+    g_videoFrame.pitch  = fw * 4;   // presenter stride is always 32 bpp
+    g_videoFrame.bpp    = 4;
+
+    fbneo_trace("video %dx%d visible %dx%d bpp=%d", fw, fh, vw, vh, g_nativeBpp);
+}
+
+// Re-read the driver geometry and resize when it changed. Drivers that switch
+// resolution mid-game (Mega Drive 320/256 and interlace 320x448, CPS3) call
+// BurnDrvSetVisibleSize() and ReinitialiseVideo(), which nulls pBurnDraw; the
+// buffer must follow or a taller mode would be written past its end.
+void refresh_video_geometry(bool force)
+{
+    INT32 fw = 0, fh = 0;
+    BurnDrvGetFullSize(&fw, &fh);
+    if (fw <= 0 || fh <= 0) BurnDrvGetVisibleSize(&fw, &fh);
+    if (fw <= 0 || fh <= 0) { fw = 384; fh = 224; }
+
+    // Visible region shown to the user. For horizontal drivers it is the
+    // top-left vw x vh rectangle of the full buffer (BurnDrvGetVisibleOffs is
+    // 0,0); vertical drivers report the already-rotated full size as displayed.
+    INT32 vw = fw, vh = fh;
+    if (!(g_orientationFlags & kVideoVertical))
+    {
+        INT32 cvw = 0, cvh = 0;
+        BurnDrvGetVisibleSize(&cvw, &cvh);
+        if (cvw > 0 && cvh > 0 && cvw <= fw && cvh <= fh) { vw = cvw; vh = cvh; }
+    }
+
+    if (!force && fw == g_fullWidth && fh == g_fullHeight &&
+        vw == g_videoFrame.width && vh == g_videoFrame.height)
+    {
+        return;
+    }
+
+    configure_video_buffers(fw, fh, vw, vh);
+}
+
+// RGB565 render buffer -> XRGB8888 frame the presenter consumes.
+void convert_native_to_display()
+{
+    if (g_nativeBpp != 2 || g_displayBuffer.empty()) return;
+
+    const int w = g_videoFrame.width;
+    const int h = g_videoFrame.height;
+    const size_t srcPitch = (size_t)nBurnPitch;
+    const size_t dstPitch = (size_t)g_videoFrame.pitch;
+    for (int y = 0; y < h; y++)
+    {
+        const uint16_t* src = reinterpret_cast<const uint16_t*>(g_videoBuffer.data() + (size_t)y * srcPitch);
+        uint8_t* dst = g_displayBuffer.data() + (size_t)y * dstPitch;
+        for (int x = 0; x < w; x++)
+        {
+            const uint32_t c = rgb565_to_xrgb8888(src[x]);
+            std::memcpy(dst + (size_t)x * 4, &c, 4);
+        }
+    }
+}
+
 bool Initialize(const char* gameName, const char* const* archives, int archiveCount, int players)
 {
     if (g_driverInited) return true;
@@ -1244,11 +1359,22 @@ bool Initialize(const char* gameName, const char* const* archives, int archiveCo
     // A generous default framebuffer; drivers that draw during BurnDrvInit()
     // have somewhere to write. It is resized to the real geometry afterwards.
     g_videoBuffer.assign(1024ull * 1024ull * 4ull, 0);
-    nBurnBpp   = 4;
-    nBurnPitch = 1024 * 4;
+
+    // Orientation and pixel depth come from the driver table, so they are known
+    // before BurnDrvInit(). Drivers flagged BDF_16BIT_ONLY render RGB565 and
+    // keep their palette in UINT16 LUTs; give them a 16-bpp converter and a
+    // 16-bpp buffer, exactly like FBNeo's own frontends.
+    g_orientationFlags = 0;
+    const INT32 drvFlags = BurnDrvGetFlags();
+    if (drvFlags & BDF_ORIENTATION_VERTICAL) g_orientationFlags |= kVideoVertical;
+    if (drvFlags & BDF_ORIENTATION_FLIPPED)  g_orientationFlags |= kVideoFlipped;
+    g_nativeBpp = (drvFlags & BDF_16BIT_ONLY) ? 2 : 4;
+
+    nBurnBpp   = g_nativeBpp;
+    nBurnPitch = 1024 * g_nativeBpp;
     pBurnDraw  = g_videoBuffer.data();
 
-    BurnHighCol = fbneo_highcol32;
+    BurnHighCol = (g_nativeBpp == 2) ? fbneo_highcol16 : fbneo_highcol32;
 
     BurnExtLoadRom = fbneo_load_rom;
 
@@ -1272,41 +1398,10 @@ bool Initialize(const char* gameName, const char* const* archives, int archiveCo
     // driver's declared defaults before the first frame runs.
     apply_dip_defaults();
 
-    INT32 fw = 0, fh = 0;
     // Full framebuffer. Drivers can render well outside the visible window: the
     // CPS1 renderer, for instance, uses a 384x1024 buffer while only the top 224
     // lines are ever on screen.
-    BurnDrvGetFullSize(&fw, &fh);
-    if (fw <= 0 || fh <= 0) BurnDrvGetVisibleSize(&fw, &fh);
-    if (fw <= 0 || fh <= 0) { fw = 384; fh = 224; }
-
-    g_orientationFlags = 0;
-    {
-        const INT32 flags = BurnDrvGetFlags();
-        if (flags & BDF_ORIENTATION_VERTICAL) g_orientationFlags |= kVideoVertical;
-        if (flags & BDF_ORIENTATION_FLIPPED)  g_orientationFlags |= kVideoFlipped;
-    }
-
-    // Visible region shown to the user. For horizontal drivers it is the
-    // top-left vw x vh rectangle of the full buffer (BurnDrvGetVisibleOffs is
-    // 0,0); vertical drivers report the already-rotated full size as displayed.
-    INT32 vw = fw, vh = fh;
-    if (!(g_orientationFlags & kVideoVertical))
-    {
-        INT32 cvw = 0, cvh = 0;
-        BurnDrvGetVisibleSize(&cvw, &cvh);
-        if (cvw > 0 && cvh > 0 && cvw <= fw && cvh <= fh) { vw = cvw; vh = cvh; }
-    }
-
-    // Re-allocating can move the buffer, so re-point pBurnDraw afterwards.
-    g_videoBuffer.assign((size_t)fw * fh * 4, 0);
-    nBurnPitch = fw * 4;
-    pBurnDraw  = g_videoBuffer.data();
-    g_videoFrame.pixels = g_videoBuffer.data();
-    g_videoFrame.width  = vw;
-    g_videoFrame.height = vh;
-    g_videoFrame.pitch  = fw * 4;   // stride stays at the full buffer width
-    g_videoFrame.bpp    = 4;
+    refresh_video_geometry(true);
 
     if (nBurnFPS > 0)
         nBurnSoundLen = (nBurnSoundRate * 100 + (nBurnFPS >> 1)) / nBurnFPS;
@@ -1828,6 +1923,10 @@ void Shutdown()
     pBurnSoundOut  = nullptr;
     g_videoFrame   = {};
     g_videoBuffer.clear();
+    g_displayBuffer.clear();
+    g_nativeBpp  = 4;
+    g_fullWidth  = 0;
+    g_fullHeight = 0;
     g_soundBuffer.clear();
     {
         std::lock_guard<std::mutex> lock(g_playerInputMapMutex);
@@ -2095,14 +2194,34 @@ bool LoadState(const unsigned char* buffer, int len)
 // the emulated video output without a display.
 static void debug_maybe_dump_frame()
 {
-    static bool s_dumped = false;
-    static int  s_counter = 0;
-    if (s_dumped) return;
+    static int s_counter = 0;
+    static int s_last = -1;
+    static bool s_done = false;
+    static bool s_parsed = false;
+    static std::vector<int> s_at;
+    if (s_done) return;
     const char* path = std::getenv("RMGK_FBNEO_DUMP_FRAME");
     if (!path || !*path) return;
-    if (++s_counter < 120) return;
-    if (s_counter != 120 && s_counter != 600 && s_counter != 1200) return;
-    if (s_counter == 1200) s_dumped = true;
+    if (!s_parsed)
+    {
+        s_parsed = true;
+        const char* list = std::getenv("RMGK_FBNEO_DUMP_AT");
+        if (list && *list)
+        {
+            for (const char* p = list; *p; )
+            {
+                const int n = std::atoi(p);
+                if (n > 0) s_at.push_back(n);
+                while (*p && *p != ',') p++;
+                if (*p == ',') p++;
+            }
+        }
+        if (s_at.empty()) { s_at.push_back(120); s_at.push_back(600); s_at.push_back(1200); }
+        s_last = *std::max_element(s_at.begin(), s_at.end());
+    }
+    ++s_counter;
+    if (s_counter >= s_last) s_done = true;
+    if (std::find(s_at.begin(), s_at.end(), s_counter) == s_at.end()) return;
 
     char pathBuf[1024];
     std::snprintf(pathBuf, sizeof(pathBuf), "%s.%d", path, s_counter);
@@ -2155,6 +2274,10 @@ bool RunFrame(int flags)
 
     apply_latched_input();
 
+    // The previous frame may have switched resolution (Mega Drive interlace
+    // 320x448, 256x224 mode, CPS3); follow the new geometry before drawing.
+    refresh_video_geometry(false);
+
     // Video, like audio, is part of the emulated state and not just an output.
     // Several drivers derive *saved* values inside their draw routines: the
     // CPS-2 renderer, for instance, advances the sprite Z buffer and its
@@ -2191,6 +2314,11 @@ bool RunFrame(int flags)
 
     auto t0 = clock_::now();
     BurnDrvFrame();
+
+    // Drivers rendering RGB565 (Mega Drive/32X, CPS3, Cave, GBA) left their
+    // native pixels in g_videoBuffer; the presenter only speaks XRGB8888.
+    if (flags & Output_Video)
+        convert_native_to_display();
 
     // Spend one frame of a frontend test-switch tap. Doing this on the emulation
     // side (instead of with a QTimer) guarantees the driver actually samples the
