@@ -294,7 +294,7 @@ ExternalProject_Add(SDL_GameControllerDB
 # static libfbneo_core.a that RMG-Core links PRIVATEly (so no extra runtime DLL
 # has to be shipped). Only dependency('threads') is external for this frontend,
 # so no pkg-config is needed.
-set(RMGK_FBNEO_DIR "E:/fbneo rmkg-k/FBNeo-master/FBNeo-master" CACHE PATH
+set(RMGK_FBNEO_DIR "E:/fbneo-base" CACHE PATH
     "Path to the FBNeo source tree used to build the embedded 'lib' core")
 
 if (EXISTS "${RMGK_FBNEO_DIR}/meson.build")

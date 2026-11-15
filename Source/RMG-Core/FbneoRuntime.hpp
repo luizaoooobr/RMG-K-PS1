@@ -64,6 +64,17 @@ namespace fbneo_rt
     // Driver probe (used by the loading path / ROM browser to tell an FBNeo
     // romset from an N64 archive). Initializes the Burn library on first use.
     bool IsDriver(const char* gameName);
+    // Resolve a ROM file (romset archive or a loose console ROM) to its FBNeo
+    // driver by content: canonical zip/7z stems first, then the CRC32 + size of
+    // the archive entries / file body. This is what lets a No-Intro collection
+    // ("Sonic the Hedgehog (USA).md", "Super Mario Bros. (World).zip") run under
+    // the driver that owns that exact dump, regardless of how the file is named
+    // or which system folder it sits in. Returns false when nothing matches.
+    bool ResolveDriver(const char* path, std::string& shortName, std::string& fullName);
+    // Opt-in diagnostic sink (enabled by RMGK_FBNEO_TRACE in the environment).
+    // Writes one line to stderr; used to explain why a ROM did or did not map to
+    // a driver, and by the session setup to record the ROM it was handed.
+    void Trace(const std::string& message);
     // Full (human readable) driver name, e.g. "Street Fighter II' - Champion Edition".
     bool DriverFullName(const char* gameName, std::string& outName);
     // Deterministic, peer-shared 128-bit identifier (32 hex chars) for a driver.

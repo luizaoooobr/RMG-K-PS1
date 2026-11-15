@@ -1,8 +1,8 @@
 #include "cps.h"
+#include "burn_ost.h"
+// CPS - Read/Write
 
 CpsRwGetInpCallback CpsRwGetInpCallbackFunction = NULL;
-#include "xmvsf3v3.h"
-// CPS - Read/Write
 
 // Input bits
 #define INP(nnn) UINT8 CpsInp##nnn[8];
@@ -38,6 +38,12 @@ UINT8 fFakeDip = 0;
 
 static INT32 nRasterLine;
 
+// 0x4E: x counter (#3), 0x50/0x52: line counters #1/#2
+static inline INT32 RasterReg(UINT32 ia)
+{
+	return (ia < 0x150) ? 2 : ((ia - 0x150) >> 1);
+}
+
 INT32 PangEEP = 0;
 INT32 Forgottn = 0;
 INT32 Cps1QsHack = 0;
@@ -50,6 +56,7 @@ INT32 Ssf2tb = 0;
 INT32 Dinohunt = 0;
 INT32 Port6SoundWrite = 0;
 INT32 CpsBootlegEEPROM = 0;
+// RMG-K: Zero800-style CPS-2 turbo (extra tile address bit + 68K ROM window/TurboFrq).
 INT32 Cps2Turbo = 0;
 INT32 Jurassic99 = 0;
 INT32 Dinoh = 0;
@@ -62,6 +69,57 @@ INT32 Ecofght = 0;
 ClearOpposite<4, UINT8> clear_opposite;
 
 CpsRWSoundCommandCallback CpsRWSoundCommandCallbackFunction = NULL;
+
+// ---------------------------------------------------------------------------
+// OST packs (burn/snd/burn_ost.cpp): music commands -> external tracks
+
+static UINT8 nOstQsndTrigger = 0;
+
+static void CpsOstSendPsnd(UINT32 nCode)	// CPS1: sound latch
+{
+	PsndCode = nCode & 0xff;
+}
+
+static void CpsOstSendQsnd(UINT32 nCode)	// CPS2 / CPS1 QSound: mailbox in the shared ram
+{
+	CpsZRamC0[0x000] = (nCode >> 8) & 0xff;
+	CpsZRamC0[0x001] = nCode & 0xff;
+	CpsZRamC0[0x00f] = nOstQsndTrigger;
+}
+
+// 68k wrote the last byte of a QSound command (0x61801f / 0xf1801f)
+INT32 CpsOstQsndMailbox(UINT8 nTrigger)
+{
+	nOstQsndTrigger = nTrigger;
+
+	if (bBurnOstLog) {
+		bprintf(0, _T("OST: qsound mailbox"));
+		for (INT32 i = 0; i < 0x0f; i++) bprintf(0, _T(" %02x"), CpsZRamC0[i]);
+		bprintf(0, _T(" [%02x]\n"), nTrigger);
+	}
+
+	// command code: first two bytes of the mailbox
+	INT32 nOut = BurnOstCommand((CpsZRamC0[0x000] << 8) | CpsZRamC0[0x001]);
+	if (nOut == OST_DROP) return 0;
+
+	CpsZRamC0[0x000] = (nOut >> 8) & 0xff;
+	CpsZRamC0[0x001] = nOut & 0xff;
+
+	return 1;
+}
+
+void CpsOstInit()
+{
+	// BurnSample is shared, so not for drivers with samples of their own (d_cps2_custom.cpp)
+	if (BurnDrvGetTextA(DRV_SAMPLENAME) != NULL) return;
+
+	if (Cps == 2 || Cps1Qs == 1) {
+		if (Cps == 2 && Cps2DisableQSnd) return;
+		BurnOstInit(BurnDrvGetTextA(DRV_NAME), BurnDrvGetTextA(DRV_PARENT), OST_MAILBOX, CpsOstSendQsnd);
+	} else if ((Cps & 1) && !Cps1DisablePSnd) {
+		BurnOstInit(BurnDrvGetTextA(DRV_NAME), BurnDrvGetTextA(DRV_PARENT), OST_LATCH, CpsOstSendPsnd);
+	}
+}
 
 static INT32 nCalc[2] = {0, 0};
 
@@ -209,6 +267,15 @@ static UINT8 CpsReadPort(const UINT32 ia)
 		return d;
 	}
 
+	// Raster counters (CPS-B-21)
+	if (bCpsRasterCounters && ia >= 0x14E && ia < 0x154) {
+		if ((ia & 1) == 0) {
+			nRasterLine = CpsRasterRead(RasterReg(ia));
+			return nRasterLine >> 8;
+		}
+		return nRasterLine & 0xFF;
+	}
+
 	if (Cps == 2) {
 		// Used on CPS2 only I think
 		if (ia == 0x020) {
@@ -237,28 +304,6 @@ static UINT8 CpsReadPort(const UINT32 ia)
 			return d;
 		}
 
-		if (ia >= 0x0100 && ia < 0x0200) {
-//			bprintf(PRINT_NORMAL, _T("  - port 0x%02X (%3i)\n"), ia & 255, SekCurrentScanline());
-
-			// The linecounters seem to return the line at which the last IRQ triggered by this counter is scheduled minus the current line
-			if ((ia & 0x0FE) == 0x50) {
-				if ((ia & 1) == 0) {
-					nRasterLine = nIrqLine50 - SekCurrentScanline();
-					return nRasterLine >> 8;
-				} else {
-					return nRasterLine & 0xFF;
-				}
-			}
-			if ((ia & 0x0FE) == 0x52) {
-				if ((ia & 1) == 0) {
-					nRasterLine = nIrqLine52 - SekCurrentScanline();
-					return nRasterLine >> 8;
-				} else {
-					return nRasterLine & 0xFF;
-				}
-			}
-
-		}
 	} else {
 		// Board ID
 		if (ia == 0x100 + CpsBID[0]) {
@@ -384,6 +429,12 @@ void CpsWritePort(const UINT32 ia, UINT8 d)
 			if (ia == 0x181 || (Port6SoundWrite && (ia == 0x006 || ia == 0x007))) {
 				PsndSyncZ80((INT64)SekTotalCycles() * nCpsZ80Cycles / nCpsCycles);
 
+				if (BurnOstActive()) {
+					INT32 nOst = BurnOstCommand(d);
+					if (nOst == OST_DROP) return;
+					d = nOst & 0xff;
+				}
+
 				PsndCode = d;
 				return;
 			}
@@ -391,6 +442,8 @@ void CpsWritePort(const UINT32 ia, UINT8 d)
 			// CPS1 sound fade
 			if (ia == 0x189) {
 				PsndSyncZ80((INT64)SekTotalCycles() * nCpsZ80Cycles / nCpsCycles);
+
+				BurnOstFadeLatch(d);
 
 				PsndFade = d;
 				return;
@@ -426,6 +479,11 @@ void CpsWritePort(const UINT32 ia, UINT8 d)
 			return;
 		}
 		CpsReg[(ia ^ 1) & 0xFF] = d;
+
+		// Raster counters (CPS-B-21), the low byte of a word write comes last
+		if (bCpsRasterCounters && ia >= 0x14E && ia < 0x154 && (ia & 1)) {
+			CpsRasterWrite(RasterReg(ia), BURN_ENDIAN_SWAP_INT16(*((UINT16*)(CpsReg + (ia & 0xFE)))));
+		}
 		
 		if (ia == 0x10b) {
 			GetPalette(0, 6);
@@ -468,133 +526,8 @@ void CpsWritePort(const UINT32 ia, UINT8 d)
 //	bprintf(PRINT_NORMAL, _T("Write Port %x, %x\n"), ia, d);
 }
 
-// X-Men Vs. Street Fighter 3v3 + DHC board additions (see xmvsf3v3.h), enabled by its drivers only
-UINT8 CpsXmvSixButtons[XMV6_PLAYERS][13];
-INT32 CpsXmvSixEnabled = 0;
-INT32 CpsXmvWide = 0;
-static UINT16 CpsXmvSixCapabilities = 0;
-static XmvSixInputState CpsXmvSixState;
-static UINT8 *CpsXmvSixWorkRam = NULL;
-
-INT32 CpsXmvSixInit(INT32 bWide)
-{
-	CpsXmvSixWorkRam = (UINT8*)BurnMalloc(XMV6_WORK_RAM_BYTES);
-	if (CpsXmvSixWorkRam == NULL) {
-		return 1;
-	}
-
-	CpsXmvWide = bWide ? 1 : 0;
-	CpsXmvSixCapabilities = XMV6_CAP_WORK_RAM | XMV6_CAP_PORTRAITS | XMV6_CAP_PORTRAITS_6 | XMV6_CAP_PORTRAITS_12 | XMV6_CAP_PORTRAITS_18;
-	if (bWide) {
-		CpsXmvSixCapabilities |= XMV6_CAP_WIDE | XMV6_CAP_WIDE_SCROLL1;
-	}
-	CpsXmvSixEnabled = 1;
-
-	memset(CpsXmvSixButtons, 0, sizeof(CpsXmvSixButtons));
-	/* CpsXmvSixReset(); */
-
-	return 0;
-}
-
-void CpsXmvSixExit()
-{
-	CpsXmvSixEnabled = 0;
-	CpsXmvWide = 0;
-	BurnFree(CpsXmvSixWorkRam);
-}
-
-INT32 CpsXmvSixReset()
-{
-	if (!CpsXmvSixEnabled) return 0;
-
-	XmvSixReset(&CpsXmvSixState);
-	memset(CpsXmvSixWorkRam, 0, XMV6_WORK_RAM_BYTES);
-
-	return 0;
-}
-
-INT32 CpsXmvSixScan(INT32 nAction, INT32* /*pnMin*/)
-{
-	if (!CpsXmvSixEnabled) return 0;
-
-	if (nAction & ACB_MEMORY_RAM) {
-		struct BurnArea ba;
-		memset(&ba, 0, sizeof(ba));
-		ba.Data		= CpsXmvSixWorkRam;
-		ba.nLen		= XMV6_WORK_RAM_BYTES;
-		ba.nAddress	= XMV6_WORK_RAM_BASE;
-		ba.szName	= "XMvsSF 3v3 work RAM";
-		BurnAcb(&ba);
-	}
-
-	if (nAction & ACB_DRIVER_DATA) {
-		SCAN_VAR(CpsXmvSixState);
-
-		if (nAction & ACB_WRITE) {
-			if (CpsXmvSixState.abi != XMV6_VERSION || CpsXmvSixState.count > XMV6_DEPTH) {
-				// not a state of this board
-				/* CpsXmvSixReset(); */
-				return 1;
-			}
-		}
-	}
-
-	// The board's display state (latched palette/registers, sprite Z buffer and sprite lag
-	// buffers) is scanned centrally in CpsAreaScan() for every CPS-2 title now, so it is no
-	// longer done here. Keeping it here as well would store every visual block twice.
-	return 0;
-}
-
-// Wide screen: while the ROM keeps 'XS1X' at 0x813ff8, scroll1 columns 64-127 come from 0x814000
-const UINT8* CpsXmvScroll1Extension()
-{
-	if (!CpsXmvSixEnabled || !CpsXmvWide) return NULL;
-
-	const UINT8* tag = CpsXmvSixWorkRam + 0x3ff8;
-	if (tag[0] != 'X' || tag[1] != 'S' || tag[2] != '1' || tag[3] != 'X') return NULL;
-
-	return CpsXmvSixWorkRam + 0x4000;
-}
-
-// Once a frame, before the input ports are compiled
-static void CpsXmvSixSample()
-{
-	UINT16 raw[XMV6_PLAYERS];
-	for (INT32 p = 0; p < XMV6_PLAYERS; p++) {
-		raw[p] = 0;
-		for (INT32 bit = 0; bit < 13; bit++) {
-			raw[p] |= (CpsXmvSixButtons[p][bit] & 1) << bit;
-		}
-	}
-	XmvSixSample(&CpsXmvSixState, raw);
-
-	// P1 and P2 also reach the stock input ports, for the game's own menus
-	for (INT32 bit = 0; bit < 7; bit++) {
-		CpsInp001[bit] = (CpsXmvSixState.held[0] >> bit) & 1;
-		CpsInp000[bit] = (CpsXmvSixState.held[1] >> bit) & 1;
-	}
-	for (INT32 p = 0; p < 2; p++) {
-		UINT16 value = CpsXmvSixState.held[p];
-		CpsInp011[p * 4 + 0] = (value >>  8) & 1;	// weak kick
-		CpsInp011[p * 4 + 1] = (value >>  9) & 1;	// medium kick
-		CpsInp020[p + 0]     = (value >> 11) & 1;	// start
-		CpsInp020[p + 4]     = (value >> 12) & 1;	// coin
-	}
-	CpsInp011[2] = (CpsXmvSixState.held[0] >> 10) & 1;	// P1 strong kick
-	CpsInp020[6] = (CpsXmvSixState.held[1] >> 10) & 1;	// P2 strong kick
-}
-
 UINT8 __fastcall CpsReadByte(UINT32 a)
 {
-	if (CpsXmvSixEnabled) {
-		if (a >= XMV6_BASE && a < XMV6_BASE + XMV6_WINDOW_BYTES) {
-			return XmvSixReadByte(&CpsXmvSixState, CpsXmvSixCapabilities, a - XMV6_BASE);
-		}
-		if (a >= XMV6_WORK_RAM_BASE && a < XMV6_WORK_RAM_BASE + XMV6_WORK_RAM_BYTES) {
-			return CpsXmvSixWorkRam[a - XMV6_WORK_RAM_BASE];
-		}
-	}
-
 	// Input ports mirrored between 0x800000 and 0x807fff
 	if ((a & 0xFF8000) == 0x800000) {
 		return CpsReadPort(a & 0x1FF);
@@ -623,11 +556,6 @@ UINT8 __fastcall CpsReadByte(UINT32 a)
 
 void __fastcall CpsWriteByte(UINT32 a,UINT8 d)
 {
-	if (CpsXmvSixEnabled && a >= XMV6_WORK_RAM_BASE && a < XMV6_WORK_RAM_BASE + XMV6_WORK_RAM_BYTES) {
-		CpsXmvSixWorkRam[a - XMV6_WORK_RAM_BASE] = d;
-		return;
-	}
-
 	// Output ports mirrored between 0x800000 and 0x807fff
 	if ((a & 0xFF8000) == 0x800000) {
 		CpsWritePort(a & 0x1FF, d);
@@ -637,16 +565,16 @@ void __fastcall CpsWriteByte(UINT32 a,UINT8 d)
 	if (Cps == 2) {
 		// 0x400000 registers
 		if (Cps2Turbo) {
-			if ((a & 0xFFFFF0) == 0x665000)	{
+			if ((a & 0xFFFFF0) == 0x665000) {
 				CpsFrg[a & 0x0F] = d;
 				return;
 			}
-			if ((a & 0xFFFFF0) == 0xfffff0)	{
+			if ((a & 0xFFFFF0) == 0xfffff0) {
 				CpsFrg[a & 0x0F] = d;
 				return;
 			}
 		} else {
-			if ((a & 0xFFFFF0) == 0x400000)	{
+			if ((a & 0xFFFFF0) == 0x400000) {
 				CpsFrg[a & 0x0F] = d;
 				return;
 			}
@@ -676,15 +604,6 @@ void __fastcall CpsWriteByte(UINT32 a,UINT8 d)
 
 UINT16 __fastcall CpsReadWord(UINT32 a)
 {
-	if (CpsXmvSixEnabled) {
-		if (a >= XMV6_BASE && a < XMV6_BASE + XMV6_WINDOW_BYTES) {
-			return XmvSixReadWord(&CpsXmvSixState, CpsXmvSixCapabilities, a - XMV6_BASE);
-		}
-		if (a >= XMV6_WORK_RAM_BASE && a < XMV6_WORK_RAM_BASE + XMV6_WORK_RAM_BYTES) {
-			return XmvSixRamReadWord(CpsXmvSixWorkRam, a - XMV6_WORK_RAM_BASE);
-		}
-	}
-
 	if ((a & 0xFF8FFF) == 0x800100 + CpsMProt[3]) {
 		return (UINT16)((nCalc[0] * nCalc[1]) >> 16);
 	}
@@ -700,11 +619,6 @@ UINT16 __fastcall CpsReadWord(UINT32 a)
 
 void __fastcall CpsWriteWord(UINT32 a, UINT16 d)
 {
-	if (CpsXmvSixEnabled && a >= XMV6_WORK_RAM_BASE && a < XMV6_WORK_RAM_BASE + XMV6_WORK_RAM_BYTES) {
-		XmvSixRamWriteWord(CpsXmvSixWorkRam, a - XMV6_WORK_RAM_BASE, d);
-		return;
-	}
-
 	// ports mirrored between 0x800000 and 0x807fff
 	if ((a & 0xFF8FFF) == 0x800100 + CpsMProt[0])
 		nCalc[0] = d;
@@ -747,6 +661,7 @@ INT32 CpsRwInit()
 
 INT32 CpsRwExit()
 {
+	CpsRwGetInpCallbackFunction = NULL;
 	InpBlank();
 	CpsRWSoundCommandCallbackFunction = NULL;
 	return 0;
@@ -754,9 +669,7 @@ INT32 CpsRwExit()
 
 INT32 CpsRwGetInp()
 {
-	if (CpsXmvSixEnabled) {
-		CpsXmvSixSample();
-	}
+	INT32 nPortPlayers = CpsRwGetInpCallbackFunction ? CpsRwGetInpCallbackFunction() : nMaxPlayers;
 
 	// Compile separate buttons into Inpxxx
 #define INP(nnn) \
@@ -867,22 +780,20 @@ INT32 CpsRwGetInp()
 		}
 	}
 
-	// xmvsf3v3: players 3-6 never reach the stock ports (Inp011 is P1/P2's kicks there), and
-	// CpsXmvSixSample() has already cleaned every player's opposite directions
-	if (nMaxPlayers > 2 && !CpsXmvSixEnabled) {
+	if (nPortPlayers > 2) {
 		if (Cps == 2) {
 			clear_opposite.check(2, Inp011, 0x08, 0x04, 0x02, 0x01, nSocd[2]);
-			if (nMaxPlayers == 4) {
+			if (nPortPlayers == 4) {
 				clear_opposite.check(3, Inp010, 0x08, 0x04, 0x02, 0x01, nSocd[3]);
 			}
 		} else {
 			clear_opposite.check(2, Inp177, 0x08, 0x04, 0x02, 0x01, nSocd[2]);
-			if (nMaxPlayers == 4) {
+			if (nPortPlayers == 4) {
 				clear_opposite.check(3, Inp179, 0x08, 0x04, 0x02, 0x01, nSocd[3]);
 			}
 			if (Cps1Qs) {
 				clear_opposite.check(2, Inpc001, 0x08, 0x04, 0x02, 0x01, nSocd[2]);
-				if (nMaxPlayers == 4) {
+				if (nPortPlayers == 4) {
 					clear_opposite.check(3, Inpc003, 0x08, 0x04, 0x02, 0x01, nSocd[3]);
 				}
 			}

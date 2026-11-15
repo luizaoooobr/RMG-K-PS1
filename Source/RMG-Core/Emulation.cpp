@@ -804,17 +804,29 @@ static void apply_pif_rom_settings(void)
 // Exported Functions
 //
 
-// FBNeo identifies a game by its driver name, which is the ROM archive's base
-// name (sf2ce.zip -> "sf2ce").
+// FBNeo identifies a game by its driver name. A romset archive whose stem is a
+// driver keeps that name (sf2ce.zip -> "sf2ce"); console ROMs are named after
+// the game instead ("Sonic the Hedgehog (USA).md"), so the driver is resolved
+// from the ROM content (and the system folder it sits in).
 static std::string fbneo_game_name(const std::filesystem::path& rom)
 {
+    std::string shortName;
+    std::string fullName;
+    if (fbneo_rt::ResolveDriver(rom.string().c_str(), shortName, fullName) && !shortName.empty())
+    {
+        return shortName;
+    }
+
     return rom.stem().string();
 }
 
 // The archive list handed to FBNeo must hold the game's own archive plus any
 // BIOS/parent archive FBNeo needs to resolve ROMs. NeoGeo, CPS-3 and IGS/PGM
 // titles read their BIOS from a separate archive that ships beside the game, so
-// we probe the ROM's directory for the known BIOS archives.
+// we probe the ROM's directory for the known BIOS archives. Console systems are
+// shipped as one loose ROM per title, but their FBNeo driver still lists a BIOS
+// as another ROM entry; the runtime resolves that one by its canonical name from
+// the same folders (see the directory table in FbneoRuntime.cpp).
 static std::vector<std::string> fbneo_rom_archives(const std::filesystem::path& rom)
 {
     std::vector<std::string> archives;
@@ -825,13 +837,26 @@ static std::vector<std::string> fbneo_rom_archives(const std::filesystem::path& 
         archives.push_back(rom.string());
     }
 
-    const std::filesystem::path dir = rom.parent_path();
+    // The ROM's own system folder (roms/nes) and the roms root above it (roms):
+    // a shared BIOS/parent set may live in either one.
+    std::vector<std::filesystem::path> dirs;
+    for (std::filesystem::path dir = rom.parent_path();
+         !dir.empty() && dirs.size() < 3;
+         dir = dir.parent_path())
+    {
+        dirs.push_back(dir);
+        if (dir == dir.root_path())
+        {
+            break;
+        }
+    }
 
     // FBNeo frontends open the parent set next to a clone, and clone romsets may
     // keep part of their data there (e.g. usf2u expects sfx.12m, which ships in
     // ssf2t.zip). The ROM loader matches every entry by CRC across all opened
     // archives, so making the parent zip available is enough.
-    std::string parent = rom.stem().string();
+    static const char* const kArchiveExts[] = { ".zip", ".7z" };
+    std::string parent = fbneo_game_name(rom);
     for (int depth = 0; depth < 8; depth++)
     {
         std::string parentName;
@@ -840,13 +865,21 @@ static std::vector<std::string> fbneo_rom_archives(const std::filesystem::path& 
             break;
         }
 
-        static const char* const kArchiveExts[] = { ".zip", ".7z" };
-        for (const char* ext : kArchiveExts)
+        for (const auto& dir : dirs)
         {
-            const std::filesystem::path candidate = dir / (parentName + ext);
-            if (std::filesystem::is_regular_file(candidate, ec))
+            bool found = false;
+            for (const char* ext : kArchiveExts)
             {
-                archives.push_back(candidate.string());
+                const std::filesystem::path candidate = dir / (parentName + ext);
+                if (std::filesystem::is_regular_file(candidate, ec))
+                {
+                    archives.push_back(candidate.string());
+                    found = true;
+                    break;
+                }
+            }
+            if (found)
+            {
                 break;
             }
         }
@@ -862,10 +895,14 @@ static std::vector<std::string> fbneo_rom_archives(const std::filesystem::path& 
 
     for (const char* bios : kBiosArchives)
     {
-        const std::filesystem::path candidate = dir / bios;
-        if (std::filesystem::is_regular_file(candidate, ec))
+        for (const auto& dir : dirs)
         {
-            archives.push_back(candidate.string());
+            const std::filesystem::path candidate = dir / bios;
+            if (std::filesystem::is_regular_file(candidate, ec))
+            {
+                archives.push_back(candidate.string());
+                break;
+            }
         }
     }
 
@@ -883,24 +920,75 @@ static std::vector<const char*> fbneo_archive_ptrs(const std::vector<std::string
     return ptrs;
 }
 
-// True when the path is an archive whose base name matches an FBNeo driver
-// (sf2ce.zip -> "sf2ce"). Arcade romsets must be routed to the FBNeo backend
-// instead of the mupen64plus N64 ROM path, which rejects them at open time.
+// True when the path is a ROM FBNeo can play: a romset archive whose stem is a
+// driver (sf2ce.zip -> "sf2ce"), or any console ROM file whose content belongs
+// to a driver (No-Intro/Redump names the file after the game, not the driver).
+// Those must be routed to the FBNeo backend instead of the mupen64plus N64 ROM
+// path, which rejects them at open time.
 static bool fbneo_is_driver_archive(const std::filesystem::path& rom)
 {
     std::error_code ec;
-    if (!std::filesystem::is_regular_file(rom, ec))
-        return false;
-
+    const bool regular = std::filesystem::is_regular_file(rom, ec);
     std::string ext = rom.extension().string();
     for (char& c : ext)
     {
         if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
     }
-    if (ext != ".zip" && ext != ".7z")
+    fbneo_rt::Trace("probe path='" + rom.string() + "' regular=" + (regular ? "yes" : "no") +
+                    " ext='" + ext + "'" + (ec ? (" ec=" + std::to_string(ec.value())) : std::string()));
+    if (!regular)
         return false;
 
-    return fbneo_rt::IsDriver(rom.stem().string().c_str());
+    // Only extensions that can hold an FBNeo romset/ROM are probed, so a disc
+    // image or an unrelated file never costs a content scan.
+    static const char* const kKnownExts[] = {
+        ".zip", ".7z",
+        ".nes", ".unf", ".fds", ".smc", ".sfc", ".fig", ".swc",
+        ".md", ".gen", ".smd", ".32x", ".sms", ".gg", ".sg", ".sgx",
+        ".col", ".rom", ".mx1", ".mx2", ".pce", ".ngp", ".ngc", ".gba",
+        ".tzx", ".tap", ".z80", ".sna", ".chf", ".a26", ".bin",
+    };
+
+    bool known = false;
+    for (const char* e : kKnownExts)
+    {
+        if (ext == e)
+        {
+            known = true;
+            break;
+        }
+    }
+    if (!known)
+        return false;
+
+    std::string shortName;
+    std::string fullName;
+    return fbneo_rt::ResolveDriver(rom.string().c_str(), shortName, fullName) && !shortName.empty();
+}
+
+// Extensions that unambiguously hold a console ROM, never an N64 image. When one
+// of these fails to map to an FBNeo driver, mupen64plus cannot play it either, so
+// the session ends with an honest message instead of "not a valid ROM image"
+// (which points the user at the wrong emulator).
+static bool fbneo_is_console_rom_ext(const std::filesystem::path& rom)
+{
+    std::string ext = rom.extension().string();
+    for (char& c : ext)
+    {
+        if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+    }
+
+    static const char* const kExts[] = {
+        ".nes", ".unf", ".fds", ".smc", ".sfc", ".fig", ".swc",
+        ".md", ".gen", ".smd", ".32x", ".sms", ".gg", ".sg", ".sgx",
+        ".col", ".mx1", ".mx2", ".pce", ".ngp", ".ngc", ".gba",
+        ".tzx", ".tap", ".z80", ".sna", ".chf", ".a26",
+    };
+    for (const char* e : kExts)
+    {
+        if (ext == e) return true;
+    }
+    return false;
 }
 
 static std::string fbneo_dip_section(const std::string& driverName)
@@ -1221,12 +1309,12 @@ bool CoreGetFbneoRomInfo(const std::filesystem::path& file, std::string& shortNa
     if (!fbneo_is_driver_archive(file))
         return false;
 
-    std::string stem = file.stem().string();
-    if (!fbneo_rt::DriverFullName(stem.c_str(), fullName))
+    std::string driver;
+    if (!fbneo_rt::ResolveDriver(file.string().c_str(), driver, fullName) || driver.empty())
         return false;
 
-    shortName = stem;
-    fbneo_rt::DriverRomId(stem.c_str(), romId);
+    shortName = driver;
+    fbneo_rt::DriverRomId(driver.c_str(), romId);
     return true;
 }
 
@@ -1362,7 +1450,20 @@ bool CoreStartEmulation(std::filesystem::path n64rom, std::filesystem::path n64d
     // FBNeo romsets bypass the mupen64plus N64 ROM gate entirely: CoreOpenRom
     // (and the plugin / cheat / rom-type steps that need an open N64 ROM) reject
     // arcade archives, whose contents carry no N64 header.
+    fbneo_rt::Trace("CoreStartEmulation rom='" + n64rom.string() + "' disk='" + n64ddrom.string() + "'");
     const bool fbneoTarget = fbneo_is_driver_archive(n64rom);
+    fbneo_rt::Trace(std::string("fbneoTarget=") + (fbneoTarget ? "yes" : "no"));
+    // A console dump FBNeo does not know (different revision, hack, bad dump) is
+    // not something mupen64plus can open. Say so instead of sending it through
+    // the N64 gate, which only reports "not a valid ROM image".
+    if (!fbneoTarget && fbneo_is_console_rom_ext(n64rom))
+    {
+        CoreSetError("FBNeo: no driver matches this ROM dump. The emulator only runs dumps "
+                     "with the exact CRC32 and size listed by FBNeo, and this file differs "
+                     "(different revision, hack or bad dump).");
+        fbneo_rt::Trace("unsupported console dump: " + n64rom.filename().string());
+        return false;
+    }
     // PlayStation discs bypass it as well: they are played by a libretro core.
     const bool psxTarget = !fbneoTarget && libretro_rt::IsMediaFile(n64rom.string().c_str());
     // Point the rollback surface at the runtime this session drives *before*

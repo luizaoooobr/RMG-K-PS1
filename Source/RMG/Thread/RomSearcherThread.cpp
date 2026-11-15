@@ -14,6 +14,7 @@
 
 #include <QElapsedTimer>
 #include <QDirIterator>
+#include <QFileInfo>
 
 using namespace Thread;
 
@@ -70,6 +71,17 @@ void RomSearcherThread::searchDirectory(QString directory)
     filter << "*.D64";
     filter << "*.ZIP";
     filter << "*.7Z";
+    // FBNeo console systems (roms/nes, roms/snes, roms/megadrive, ...): the
+    // per-title No-Intro/Redump file is usually a single loose ROM, whose driver
+    // is resolved from its content by the core, not from its name.
+    filter << "*.NES" << "*.UNF" << "*.FDS";
+    filter << "*.SMC" << "*.SFC" << "*.FIG" << "*.SWC";
+    filter << "*.MD" << "*.GEN" << "*.SMD" << "*.32X" << "*.BIN";
+    filter << "*.SMS" << "*.GG" << "*.SG" << "*.SGX";
+    filter << "*.COL" << "*.ROM" << "*.MX1" << "*.MX2";
+    filter << "*.PCE" << "*.NGP" << "*.NGC" << "*.GBA";
+    filter << "*.TZX" << "*.TAP" << "*.Z80" << "*.SNA";
+    filter << "*.CHF" << "*.A26";
     // PlayStation discs are played by the bundled libretro core, so list the
     // descriptor formats the core can load (a bare .bin is only accepted when a
     // sibling .cue names it, see libretro_rt::IsMediaFile).
@@ -107,6 +119,20 @@ void RomSearcherThread::searchDirectory(QString directory)
     for (int i = 0; i < romAmount; i++)
     {
         QString file = roms.at(i);
+
+        // A .bin is listed both as a possible console ROM and as a PlayStation
+        // track. When a same-stem .cue sits beside it, the cue is the entry the
+        // PS1 core is opened with, so skip the raw track to avoid a duplicate.
+        if (file.endsWith(".bin", Qt::CaseInsensitive))
+        {
+            const QFileInfo binInfo(file);
+            const QString cue = binInfo.absolutePath() + QLatin1Char('/') +
+                                binInfo.completeBaseName() + QStringLiteral(".cue");
+            if (QFileInfo::exists(cue))
+            {
+                continue;
+            }
+        }
 
         if (CoreGetCachedRomHeaderAndSettings(file.toStdU32String(), &type, &header, nullptr, &settings))
         {

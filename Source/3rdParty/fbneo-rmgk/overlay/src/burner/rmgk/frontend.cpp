@@ -29,6 +29,9 @@ UINT32 BurnHDDGetSectorSize(BurnHDD* pDisk) { (void)pDisk; return 0; }
 UINT32 BurnHDDGetSectorCount(BurnHDD* pDisk) { (void)pDisk; return 0; }
 INT32 BurnHDDGetGeometry(BurnHDD* pDisk, INT32* pnCylinders, INT32* pnHeads, INT32* pnSectors) { (void)pDisk; (void)pnCylinders; (void)pnHeads; (void)pnSectors; return 1; }
 INT32 BurnHDDRead(BurnHDD* pDisk, UINT32 nLba, UINT32 nCount, void* pDest) { (void)pDisk; (void)nLba; (void)nCount; (void)pDest; return 1; }
+// 1 = "no such image": the megadrive family (megaSD / mega cd + cartridge
+// games, Pier Solar discs) checks for a .chd on the hdd before booting it.
+INT32 BurnHDDGetPath(INT32 nIndex, const TCHAR* pszExt, TCHAR* pszPath) { (void)nIndex; (void)pszExt; (void)pszPath; return 1; }
 INT32 BurnHDDWrite(BurnHDD* pDisk, UINT32 nLba, UINT32 nCount, const void* pSrc) { (void)pDisk; (void)nLba; (void)nCount; (void)pSrc; return 1; }
 void BurnHDDDiscardWrites(BurnHDD* pDisk) { (void)pDisk; }
 
@@ -41,6 +44,7 @@ TCHAR szAppHDDPath[MAX_PATH] = _T("");
 TCHAR szAppBlendPath[MAX_PATH] = _T("");
 TCHAR szAppEEPROMPath[MAX_PATH] = _T("");
 TCHAR szAppSnesMsu1Path[MAX_PATH] = _T("");
+TCHAR szAppOstPath[MAX_PATH] = _T("");
 
 TCHAR szAppListsPath[MAX_PATH] = _T("");
 TCHAR szAppDatListsPath[MAX_PATH] = _T("");

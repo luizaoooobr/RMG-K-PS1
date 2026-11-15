@@ -1,14 +1,5 @@
 #include "cps.h"
-
-// Compat stubs for symbols renamed/removed in newer upstream FBNeo.
-#ifndef Cps2Turbo
-#define Cps2Turbo 0
-#endif
-
-CpsSoundScanCallback CpsSoundScanCallbackFunction = NULL;
-INT32 bCpsObjectBankHandlers = 0;
-CpsMemScanCallback CpsMemScanExtraCallbackFunction = NULL;
-
+#include "burn_ost.h"
 // CPS - Memory
 
 UINT32 CpsMProt[4];
@@ -26,6 +17,13 @@ UINT8 *CpsRam660=NULL,*CpsRam708=NULL,*CpsReg=NULL,*CpsFrg=NULL;
 UINT8 *CpsRamFF=NULL;
 
 CpsMemScanCallback CpsMemScanCallbackFunction = NULL;
+// Additional device state precedes sound state in the scan order (upstream).
+CpsMemScanCallback CpsMemScanExtraCallbackFunction = NULL;
+// Optional replacement for the QSound state scan (upstream).
+CpsSoundScanCallback CpsSoundScanCallbackFunction = NULL;
+// Set by the expanded CPS-2 boards (d_cps2_custom.cpp) once they take over the
+// object-bank mapping and display scanning.
+INT32 bCpsObjectBankHandlers = 0;
 
 // This routine is called first to determine how much memory is needed
 // and then to set up all the pointers.
@@ -96,6 +94,8 @@ static INT32 AllocateMemory()
 void CpsDoMapObjectBanks(INT32 nBank)
 {
 	nCpsObjectBank = nBank;
+
+	if (bCpsObjectBankHandlers) return;
 
 	if (nCpsObjectBank) {
 		SekMapMemory(CpsRam708 + 0x8000, 0x708000, 0x709FFF, MAP_RAM);
@@ -264,6 +264,10 @@ void __fastcall CPSQSoundC0WriteByte(UINT32 sekAddress, UINT8 byteValue)
 	QsndSyncZ80();
 #endif
 
+	if (sekAddress == 0x001F && BurnOstActive()) {
+		if (CpsOstQsndMailbox(byteValue) == 0) return;	// OST replaced it with nothing
+	}
+
 	CpsZRamC0[sekAddress >> 1] = byteValue;
 }
 
@@ -380,16 +384,17 @@ INT32 CpsMemInit()
 
 	// Map in memory:
 	// 68000 Rom (as seen as is, through read)
-	SekMapMemory(CpsRom, 0, nCpsRomLen - 1, MAP_READ);
+	UINT32 nRomMapLen = nCpsRomMapLen ? nCpsRomMapLen : nCpsRomLen;
+	SekMapMemory(CpsRom, 0, nRomMapLen - 1, MAP_READ);
 
 	// 68000 Rom (as seen decrypted, through fetch)
 	if (nCpsCodeLen > 0) {
 		// Decoded part (up to nCpsCodeLen)
 		SekMapMemory(CpsCode, 0, nCpsCodeLen - 1, MAP_FETCH);
 	}
-	if (nCpsRomLen > nCpsCodeLen) {
-		// The rest (up to nCpsRomLen)
-		SekMapMemory(CpsRom + nCpsCodeLen, nCpsCodeLen, nCpsRomLen - 1, MAP_FETCH);
+	if (nRomMapLen > nCpsCodeLen) {
+		// The remaining program data is fetched without decryption.
+		SekMapMemory(CpsRom + nCpsCodeLen, nCpsCodeLen, nRomMapLen - 1, MAP_FETCH);
 	}
 
 	if (Cps == 2) {
@@ -466,6 +471,9 @@ INT32 CpsMemExit()
 	BurnFree(CpsMem);
 	
 	CpsMemScanCallbackFunction = NULL;
+	CpsMemScanExtraCallbackFunction = NULL;
+	CpsSoundScanCallbackFunction = NULL;
+	bCpsObjectBankHandlers = 0;
 
 	return 0;
 }
@@ -545,6 +553,7 @@ INT32 CpsAreaScan(INT32 nAction, INT32 *pnMin)
 
 		SCAN_VAR(nCpsCyclesExtra);
 		SCAN_VAR(nCpsObjectBank);
+		CpsRasterScan();
 
 		if (Cps1OverrideLayers) {
 			SCAN_VAR(nCps1Layers);
@@ -553,17 +562,15 @@ INT32 CpsAreaScan(INT32 nAction, INT32 *pnMin)
 
 		CpsRwScan();									// scan cps_rw.cpp stuff
 
+		if (CpsMemScanExtraCallbackFunction && CpsMemScanExtraCallbackFunction(nAction, pnMin)) return 1;
+
 		// The CPS-2 display state (latched palette/registers/f-r registers, sprite Z buffer and
 		// sprite lag buffers) is rebuilt incrementally, so it must be part of the state for every
 		// CPS-2 title: a rollback savestate load otherwise restores stale display state and the
 		// next frames draw it, diverging visually from the replayed simulation. xmvsf3v3 used to
 		// be the only title scanning it (via CpsMemScanCallbackFunction). Centralised here so no
 		// driver can omit it.
-		if (Cps == 2) {
-			if (0) {
-				return 1;
-			}
-		}
+		if (CpsXmvVisualScan(nAction)) return 1;
 
 		if (Cps2Turbo) {
 			BurnSampleScan(nAction, pnMin);
@@ -581,10 +588,13 @@ INT32 CpsAreaScan(INT32 nAction, INT32 *pnMin)
 	}
 
 	if (((Cps == 2) && !Cps2DisableQSnd) || Cps1Qs == 1) {						// Scan QSound chips
-		QsndScan(nAction);
+		if (CpsSoundScanCallbackFunction) CpsSoundScanCallbackFunction(nAction, pnMin);
+		else QsndScan(nAction);
 	} else {											// Scan PSound chips
 		if ((Cps & 1) && !Cps1DisablePSnd) PsndScan(nAction, pnMin);
 	}
+
+	BurnOstScan(nAction, pnMin);
 	
 	if (CpsMemScanCallbackFunction) {
 		CpsMemScanCallbackFunction(nAction, pnMin);
@@ -600,7 +610,9 @@ INT32 CpsAreaScan(INT32 nAction, INT32 *pnMin)
 // simulation (reproduced with ssf2t in rollback replay). Scan it for every CPS-2 title.
 INT32 CpsXmvVisualScan(INT32 nAction)
 {
-	if (Cps != 2 || !(nAction & ACB_DRIVER_DATA)) return 0;
+	// Custom boards (d_cps2_custom.cpp) scan the same display state themselves via
+	// Cps2PlusScan(), with their own device state in the same pass.
+	if (Cps != 2 || bCpsObjectBankHandlers || !(nAction & ACB_DRIVER_DATA)) return 0;
 
 	struct BurnArea ba;
 	memset(&ba, 0, sizeof(ba));
@@ -609,7 +621,8 @@ INT32 CpsXmvVisualScan(INT32 nAction)
 	ba.Data = CpsSaveFrgData;	ba.nLen = 0x20;									ba.szName = "CPS-2 latched frg";		BurnAcb(&ba);
 	ba.Data = ZBuf;				ba.nLen = nCpsScreenWidth * nCpsScreenHeight * 2;	ba.szName = "CPS-2 sprite Z buffer";	BurnAcb(&ba);
 
-	if (0) return 1;
+	if (CpsObjScan(nAction, (char*)"CPS-2 sprite lag buffers")) return 1;
+	if (CpsPalStateScan(nAction)) return 1;
 
 	return 0;
 }
