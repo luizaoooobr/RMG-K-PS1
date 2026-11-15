@@ -48,9 +48,19 @@ struct l_Setting
 // Local Variables
 //
 
-static m64p_handle              l_sectionHandle = nullptr;
-static std::vector<std::string> l_sectionList;
-static std::vector<std::string> l_keyList;
+// Settings are read from both the GUI and the emulation thread (e.g. the FBNeo
+// runtime resolving its input/device settings while the UI refreshes the same
+// ones). These are per-lookup scratch state, not shared caches: when they were
+// plain globals, two threads calling config_section_exists() at the same time
+// did clear() and emplace_back() on the same std::vector, which corrupted the
+// heap (glibc aborted with "unaligned tcache chunk detected" inside
+// ConfigListSections). The cached handle had the same problem: one thread's
+// OpenSection could swap the section another thread was about to read from,
+// returning values from the wrong section. Keeping all three per-thread makes
+// each lookup independent without adding a lock around the m64p config API.
+static thread_local m64p_handle              l_sectionHandle = nullptr;
+static thread_local std::vector<std::string> l_sectionList;
+static thread_local std::vector<std::string> l_keyList;
 
 //
 // Local Functions
