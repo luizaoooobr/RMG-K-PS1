@@ -3316,6 +3316,16 @@ void MainWindow::connectActionSignals(void)
 }
 
 #ifdef UPDATER
+namespace
+{
+    // Our portable builds are published as assets under a single moving
+    // pre-release tag. Both the tag and the app version stay the same, so the
+    // updater uses the release's updated_at fingerprint to notice a republish.
+    constexpr const char* kUpdateTag = "vdev-9999";
+    constexpr const char* kUpdateReleasesApiUrl =
+        "https://api.github.com/repos/luizaoooobr/RMG-K-PS1/releases/tags/vdev-9999";
+}
+
 void MainWindow::checkForUpdates(bool silent, bool force)
 {
     if (!force && !CoreSettingsGetBoolValue(SettingsID::GUI_CheckForUpdates))
@@ -3323,12 +3333,15 @@ void MainWindow::checkForUpdates(bool silent, bool force)
         return;
     }
 
-    // only check for updates on stable versions unless forced
+    // only check for updates on stable versions unless forced; our own
+    // moving release tag ("vdev-9999") is handled below through the release
+    // fingerprint instead of semver
     QString currentVersion = QString::fromStdString(CoreGetVersion());
     if (!force)
     {
         static const QRegularExpression stableVersionRegex("^v?\\d+(?:\\.\\d+){0,2}$");
-        if (!stableVersionRegex.match(currentVersion).hasMatch())
+        if (currentVersion != kUpdateTag &&
+            !stableVersionRegex.match(currentVersion).hasMatch())
         {
             return;
         }
@@ -3357,7 +3370,7 @@ void MainWindow::checkForUpdates(bool silent, bool force)
     QNetworkAccessManager* networkAccessManager = new QNetworkAccessManager(this);
     connect(networkAccessManager, &QNetworkAccessManager::finished, this, &MainWindow::on_networkAccessManager_Finished);
     networkAccessManager->setTransferTimeout(15000);
-    networkAccessManager->get(QNetworkRequest(QUrl("https://api.github.com/repos/Jay-Day/RMG-K/releases/latest")));
+    networkAccessManager->get(QNetworkRequest(QUrl(kUpdateReleasesApiUrl)));
 }
 #endif // UPDATER
 
@@ -3999,24 +4012,66 @@ void MainWindow::on_networkAccessManager_Finished(QNetworkReply* reply)
     QString currentVersion = QString::fromStdString(CoreGetVersion());
     QString latestVersion = jsonObject.value("tag_name").toString();
 
+    // Our release tag never changes, so the version string alone can't tell
+    // two builds apart. GitHub bumps the release's updated_at whenever the
+    // assets or body change, which is exactly once per publish.
+    const bool isOwnFeed = (latestVersion == kUpdateTag);
+    const QString releaseFingerprint = jsonObject.value("updated_at").toString();
+    const QString knownFingerprint = QString::fromStdString(
+        CoreSettingsGetStringValue(SettingsID::GUI_LastUpdateSeen));
+
     reply->deleteLater();
 
-    // GitHub's /releases/latest endpoint only returns the latest
-    // *non-prerelease*. If we're running a pre-release tag (e.g. 0.9.3
-    // marked prerelease on GitHub), the API hands back the previous
-    // stable (0.9.2). A naive string compare then prompts the user to
-    // "update" to an older version. Compare semantically and only
-    // prompt when latest is genuinely newer.
-    const QVector<int> currentParts = parseSemverParts(currentVersion);
-    const QVector<int> latestParts  = parseSemverParts(latestVersion);
-    if (compareSemver(currentParts, latestParts) >= 0)
+    if (isOwnFeed)
     {
-        if (!this->ui_SilentUpdateCheck)
+        if (releaseFingerprint.isEmpty() || releaseFingerprint == knownFingerprint)
         {
-            Utilities::QtMessageBox::Info(this, "You're already on the latest version");
+            if (!this->ui_SilentUpdateCheck)
+            {
+                Utilities::QtMessageBox::Info(this, "You're already on the latest version");
+            }
+            return;
         }
-        return;
+
+        if (knownFingerprint.isEmpty() && this->ui_SilentUpdateCheck)
+        {
+            // First automatic check after installing: adopt the release that
+            // shipped this build instead of prompting to reinstall itself.
+            // Help > Check for Updates still opens the dialog explicitly.
+            CoreSettingsSetValue(SettingsID::GUI_LastUpdateSeen,
+                                 releaseFingerprint.toStdString());
+            CoreSettingsSave();
+            return;
+        }
     }
+    else
+    {
+        // GitHub's /releases/latest endpoint only returns the latest
+        // *non-prerelease*. If we're running a pre-release tag (e.g. 0.9.3
+        // marked prerelease on GitHub), the API hands back the previous
+        // stable (0.9.2). A naive string compare then prompts the user to
+        // "update" to an older version. Compare semantically and only
+        // prompt when latest is genuinely newer.
+        const QVector<int> currentParts = parseSemverParts(currentVersion);
+        const QVector<int> latestParts  = parseSemverParts(latestVersion);
+        if (compareSemver(currentParts, latestParts) >= 0)
+        {
+            if (!this->ui_SilentUpdateCheck)
+            {
+                Utilities::QtMessageBox::Info(this, "You're already on the latest version");
+            }
+            return;
+        }
+    }
+
+    auto markReleaseSeen = [&]() {
+        if (isOwnFeed && !releaseFingerprint.isEmpty())
+        {
+            CoreSettingsSetValue(SettingsID::GUI_LastUpdateSeen,
+                                 releaseFingerprint.toStdString());
+            CoreSettingsSave();
+        }
+    };
 
     int ret = 0;
 
@@ -4024,6 +4079,8 @@ void MainWindow::on_networkAccessManager_Finished(QNetworkReply* reply)
     ret = updateDialog.exec();
     if (ret != QDialog::Accepted)
     {
+        // The user declined this release; don't ask again for the same one.
+        markReleaseSeen();
         return;
     }
 
@@ -4035,6 +4092,7 @@ void MainWindow::on_networkAccessManager_Finished(QNetworkReply* reply)
     }
 
 #ifdef APPIMAGE_UPDATER
+    markReleaseSeen();
     this->ui_ForceClose = true;
     this->close();
 #else // normal updater
@@ -4044,6 +4102,7 @@ void MainWindow::on_networkAccessManager_Finished(QNetworkReply* reply)
     {
         return;
     }
+    markReleaseSeen();
 #endif // APPIMAGE_UPDATER
 }
 #endif // UPDATER
@@ -6045,7 +6104,7 @@ QString MainWindow::findRomByName(QString gameName)
 
 void MainWindow::on_Action_Help_Github(void)
 {
-    QDesktopServices::openUrl(QUrl("https://github.com/Jay-Day/RMG-K"));
+    QDesktopServices::openUrl(QUrl("https://github.com/luizaoooobr/RMG-K-PS1"));
 }
 
 void MainWindow::on_Action_Help_About(void)

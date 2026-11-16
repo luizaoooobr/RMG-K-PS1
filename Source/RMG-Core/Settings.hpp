@@ -51,6 +51,7 @@ enum class SettingsID
     GUI_Language,
     GUI_CheckForUpdates,
     GUI_LastUpdateCheck,
+    GUI_LastUpdateSeen,
     GUI_ConfirmExitWhileInGame,
     GUI_PreferredInputPlugin,
     GUI_Version,
