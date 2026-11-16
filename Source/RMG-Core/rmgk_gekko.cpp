@@ -3330,7 +3330,10 @@ bool rmgk_gekko::start_p2p_session(const char* gameName, int players, int inputS
     // FBNeo keeps the historical tight ring. N64 also uses a 4-byte input
     // packet, so the runtime (not the input size) decides the default here;
     // CoreStartEmulation already applied the per-runtime capacity.
-    if (CoreRollbackGetCore() == CoreRollbackCore::Fbneo)
+    // Keep the capacity CoreStartEmulation measured from the driver's actual
+    // state (PGM2 is ~2.3 MB); only ensure the historical 2 MB floor.
+    if (CoreRollbackGetCore() == CoreRollbackCore::Fbneo &&
+        g_GekkoStateCapacity < kFbneoStateCapacityBytes)
     {
         g_GekkoStateCapacity = kFbneoStateCapacityBytes;
     }
@@ -3537,7 +3540,10 @@ bool rmgk_gekko::start_lobby_session(const char* gameName, int players, int inpu
     }
 
     // See start_p2p_session: the runtime owns the default, not the input size.
-    if (CoreRollbackGetCore() == CoreRollbackCore::Fbneo)
+    // Keep the capacity CoreStartEmulation measured from the driver's actual
+    // state (PGM2 is ~2.3 MB); only ensure the historical 2 MB floor.
+    if (CoreRollbackGetCore() == CoreRollbackCore::Fbneo &&
+        g_GekkoStateCapacity < kFbneoStateCapacityBytes)
     {
         g_GekkoStateCapacity = kFbneoStateCapacityBytes;
     }
@@ -3829,7 +3835,10 @@ bool rmgk_gekko::start_local_session(const char* gameName, int players, int inpu
     }
 
     // See start_p2p_session: the runtime owns the default, not the input size.
-    if (CoreRollbackGetCore() == CoreRollbackCore::Fbneo)
+    // Keep the capacity CoreStartEmulation measured from the driver's actual
+    // state (PGM2 is ~2.3 MB); only ensure the historical 2 MB floor.
+    if (CoreRollbackGetCore() == CoreRollbackCore::Fbneo &&
+        g_GekkoStateCapacity < kFbneoStateCapacityBytes)
     {
         g_GekkoStateCapacity = kFbneoStateCapacityBytes;
     }

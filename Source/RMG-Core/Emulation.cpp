@@ -1041,6 +1041,31 @@ static void fbneo_clear_dip_settings(const std::string& driverName)
     CoreSettingsSetValue(SettingsID::FBNeo_DipSettings, section, std::vector<int>());
 }
 
+// The rollback ring is allocated once per session, so the capacity has to be
+// decided between FBNeo's driver init (which fixes the state payload) and
+// gekko_start(). The serializer is an uncompressed area dump, and the size is
+// driver-dependent: a NeoGeo set packs ~0.4 MB, while PGM2 (IGS036) carries
+// 512 KB of ARM RAM, 1.2 MB of video RAM and 16 YMZ770 MPEG decoder contexts
+// for ~2.5 MB, well past the historical 2 MB default. A short ring makes the
+// very first rollback save fail, which surfaces as a failed netplay start.
+static void fbneo_size_rollback_state()
+{
+    unsigned int capacity = rmgk_gekko::kFbneoStateCapacityBytes;
+    const int bytes = fbneo_rt::StateBytes();
+    if (bytes > 0)
+    {
+        capacity = static_cast<unsigned int>(bytes);
+        capacity += capacity / 2 + (1u << 20);  // NVRAM/cards can appear mid-session
+        if (capacity < rmgk_gekko::kFbneoStateCapacityBytes)
+        {
+            capacity = rmgk_gekko::kFbneoStateCapacityBytes;
+        }
+    }
+    rmgk_gekko::set_state_capacity_bytes(capacity);
+    fbneo_rt::Trace("rollback state bytes=" + std::to_string(bytes) +
+                    " capacity=" + std::to_string(rmgk_gekko::state_capacity_bytes()));
+}
+
 // ---------------------------------------------------------------------------
 // PlayStation (libretro) session glue.
 //
@@ -1653,6 +1678,7 @@ bool CoreStartEmulation(std::filesystem::path n64rom, std::filesystem::path n64d
                     else
                     {
                         s_FbneoActive = true;
+                        fbneo_size_rollback_state();
                         int seats = fbneo_rt::PlayerCount();
                         if (seats < 2) { seats = 2; }
                         if (seats > 4) { seats = 4; }
@@ -1734,6 +1760,7 @@ bool CoreStartEmulation(std::filesystem::path n64rom, std::filesystem::path n64d
                     else
                     {
                         s_FbneoActive = true;
+                        fbneo_size_rollback_state();
                         netplay_ret = rmgk_gekko::start_p2p_session("rmgk-gekko",
                             2, 4, player, static_cast<unsigned short>(port),
                             remoteAddress.c_str(), static_cast<unsigned short>(remotePort), frameDelay, predictionWindow);
@@ -1825,6 +1852,7 @@ bool CoreStartEmulation(std::filesystem::path n64rom, std::filesystem::path n64d
                     else
                     {
                         s_FbneoActive = true;
+                        fbneo_size_rollback_state();
                         netplay_ret = rmgk_gekko::start_lobby_session("rmgk-gekko",
                             totalSeats, 4,
                             player, static_cast<unsigned short>(port),
@@ -1942,6 +1970,7 @@ bool CoreStartEmulation(std::filesystem::path n64rom, std::filesystem::path n64d
                     // Local (non-netplay) session: re-apply the user's saved DIP
                     // choices on top of the driver defaults. Netplay sessions skip
                     // this (guarded by localRollbackEnabled = !netplay) so peers match.
+                    fbneo_size_rollback_state();
                     fbneo_load_dip_settings(fbneo_rt::DriverShortName());
                     netplay_ret = rmgk_gekko::start_local_session("rmgk-gekko-local",
                         4, 4, 0);

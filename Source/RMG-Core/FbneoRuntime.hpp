@@ -144,6 +144,13 @@ namespace fbneo_rt
     bool SaveStateInto(unsigned char* buffer, int capacity, int& outLen, int& outChecksum, int frame);
     // Allocates and returns a heap-allocated state buffer (caller frees).
     bool SaveStateAlloc(unsigned char*& outBuffer, int& outLen, int& outChecksum, int frame);
+    // Exact length of the blob SaveStateInto produces for the running driver,
+    // or 0 when no driver is initialized. The buffer serializer is an
+    // uncompressed area dump, so the size is driver-dependent (a NeoGeo set is
+    // ~0.4 MB, PGM2 ~2.3 MB because of 512 KB ARM RAM + 1.2 MB video RAM + 16
+    // YMZ770 MPEG decoder contexts). The rollback ring is allocated once per
+    // session from this value, so measure before creating the session.
+    int StateBytes();
     bool LoadState(const unsigned char* buffer, int len);
 
     // Run a single emulated frame (applies latched inputs).

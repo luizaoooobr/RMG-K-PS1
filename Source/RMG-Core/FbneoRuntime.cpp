@@ -23,6 +23,7 @@
 #include <cstring>
 #include <filesystem>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -2149,14 +2150,43 @@ bool SaveStateInto(unsigned char* buffer, int capacity, int& outLen, int& outChe
     if (BurnStateCompress(&def, &len, 1) != 0 || !def || len <= 0)
     {
         if (def) free(def);
+        CoreSetError("FBNeo rollback state save failed: BurnStateCompress returned no data");
         return false;
     }
-    if (len > capacity) { free(def); return false; }
+    if (len > capacity)
+    {
+        std::ostringstream stream;
+        stream << "FBNeo rollback state save failed: driver state is " << len
+               << " bytes but the rollback buffer holds " << capacity;
+        CoreSetError(stream.str());
+        fbneo_trace("%s", stream.str().c_str());
+        free(def);
+        return false;
+    }
     memcpy(buffer, def, (size_t)len);
     outLen      = len;
     outChecksum = (int)fnv1a(def, (size_t)len);
     free(def);
     return true;
+}
+
+// Length of the state blob for the running driver, without copying it anywhere.
+// Used to size the rollback ring before the session creates it: GekkoNet
+// allocates every per-frame state buffer once at gekko_start(), so an
+// under-sized ring can only be detected afterwards (the first save fails).
+int StateBytes()
+{
+    if (!g_driverInited) return 0;
+    std::lock_guard<std::mutex> lock(g_frameMutex);
+    UINT8* def = nullptr;
+    INT32  len = 0;
+    if (BurnStateCompress(&def, &len, 1) != 0 || !def || len <= 0)
+    {
+        if (def) free(def);
+        return 0;
+    }
+    free(def);
+    return (int)len;
 }
 
 bool SaveStateAlloc(unsigned char*& outBuffer, int& outLen, int& outChecksum, int /*frame*/)
