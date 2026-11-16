@@ -110,7 +110,7 @@ void ArcadeInputDialog::buildUi(void)
     root->setContentsMargins(12, 12, 12, 12);
     root->setSpacing(10);
 
-    m_globalStatus = new QLabel(tr("Select an input and press \"Set\" to bind a key or button."), this);
+    m_globalStatus = new QLabel(tr("Select an input and press \"Set\" (or double-click the row) to bind a key or button."), this);
     m_globalStatus->setWordWrap(true);
     root->addWidget(m_globalStatus);
 
@@ -304,6 +304,13 @@ void ArcadeInputDialog::buildTabs(void)
             m_bindings.erase(name);
             this->updateRowDescription(page, row);
         });
+        // Double-clicking a row is the same as selecting the input and pressing
+        // "Set": it starts listening for a key/button for that row. Users expect
+        // the mouse shortcut on the row they want to rebind.
+        connect(page.table, &QTableWidget::cellDoubleClicked, this,
+                [&page, this](int row, int /*column*/) {
+                    this->startListening(page, row);
+                });
         connect(page.deviceCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
                 [this](int) { /* applied on save */ });
     }
@@ -593,7 +600,7 @@ void ArcadeInputDialog::stopListening(void)
     m_listeningRow  = -1;
     m_listeningName.clear();
 
-    m_globalStatus->setText(tr("Select an input and press \"Set\" to bind a key or button."));
+    m_globalStatus->setText(tr("Select an input and press \"Set\" (or double-click the row) to bind a key or button."));
 }
 
 void ArcadeInputDialog::commitCapture(const Binding& binding)
