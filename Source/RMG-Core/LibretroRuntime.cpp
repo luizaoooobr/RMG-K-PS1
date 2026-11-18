@@ -1904,12 +1904,16 @@ static bool hw_resolve_procs()
 
 void ResolveHwFrame()
 {
-    if (!g_hw.active || !g_hw.framePending)
+    if (!g_hw.active)
     {
         return;
     }
-    g_hw.framePending = false;
 
+    // The core resolves its whole GL function table in context_reset(). Some
+    // cores (parallel-dc) boot in 2D and only create the 3D renderer seconds
+    // later, before handing us the first RETRO_HW_FRAME_BUFFER_VALID frame.
+    // Initialize the context even with no frame pending, otherwise that first
+    // renderer calls a null glGenBuffers.
     if (!hw_resolve_procs())
     {
         libretro_log("libretro HW frame: frontend did not supply usable GL function pointers");
@@ -1959,6 +1963,12 @@ void ResolveHwFrame()
         g_hw.callbacks.context_reset();
         g_hw.resetDone = true;
     }
+
+    if (!g_hw.framePending)
+    {
+        return;
+    }
+    g_hw.framePending = false;
 
     p_glBindFramebuffer(kGlFramebuffer, g_hw.framebuffer);
     if (p_glCheckFramebufferStatus != nullptr &&
