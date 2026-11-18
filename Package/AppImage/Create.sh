@@ -85,6 +85,18 @@ fi
 mkdir -p "$bin_dir/usr/lib/RMG/Core/cores"
 cp -f "$psx_core" "$bin_dir/usr/lib/RMG/Core/cores/swanstation_libretro.so"
 
+# Dreamcast/NAOMI/Atomiswave sessions load parallel-dc from the same directory.
+# Bundle the pinned build so a differently configured core from the user's
+# ~/.local/share/RMG/cores cannot change rollback state or input mapping.
+dc_core="${RMGK_DC_CORE_SO:-$toplvl_dir/Package/DcCore/parallel_dc_libretro.so}"
+if [[ ! -s "$dc_core" ]]
+then
+	echo "DC core not found: $dc_core" >&2
+	echo "Build it with Package/DcCore/build-linux.sh or point RMGK_DC_CORE_SO at a parallel_dc_libretro.so." >&2
+	exit 1
+fi
+cp -f "$dc_core" "$bin_dir/usr/lib/RMG/Core/cores/parallel_dc_libretro.so"
+
 ln -s com.github.Rosalie241.RMG.png "$bin_dir"/.DirIcon
 mv "$bin_dir/usr/share" "$bin_dir/share"
 mv "$bin_dir/usr" "$bin_dir/shared"

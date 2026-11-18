@@ -115,6 +115,18 @@ void GameSelectDialog::buildTree(void)
         {
             continue;
         }
+        else if ((filterIndex == 4) && (data.type != CoreRomType::Dreamcast))
+        {
+            continue;
+        }
+        else if ((filterIndex == 5) && (data.type != CoreRomType::Naomi))
+        {
+            continue;
+        }
+        else if ((filterIndex == 6) && (data.type != CoreRomType::Atomiswave))
+        {
+            continue;
+        }
 
         // search filter
         QString name = this->getDisplayName(data);
@@ -250,6 +262,12 @@ void GameSelectDialog::updateInfoPanel(void)
         this->typeLabel->setText(tr("Arcade"));
     else if (data.type == CoreRomType::PlayStation)
         this->typeLabel->setText(tr("PlayStation"));
+    else if (data.type == CoreRomType::Dreamcast)
+        this->typeLabel->setText(tr("Dreamcast"));
+    else if (data.type == CoreRomType::Naomi)
+        this->typeLabel->setText(tr("NAOMI"));
+    else if (data.type == CoreRomType::Atomiswave)
+        this->typeLabel->setText(tr("Atomiswave"));
     else
         this->typeLabel->setText(tr("Cartridge"));
     this->saveLabel->setText(this->getSaveTypeName(data.settings.SaveType));

@@ -3278,6 +3278,9 @@ void MainWindow::connectActionSignals(void)
     connect(this->action_Settings_Plugins, &QAction::triggered, this, &MainWindow::on_Action_Settings_Plugins);
     connect(this->action_Arcade_Input, &QAction::triggered, this, &MainWindow::on_Action_Arcade_Input);
     connect(this->action_Psx_Input, &QAction::triggered, this, &MainWindow::on_Action_Psx_Input);
+    connect(this->action_Dc_Input, &QAction::triggered, this, &MainWindow::on_Action_Dc_Input);
+    connect(this->action_Naomi_Input, &QAction::triggered, this, &MainWindow::on_Action_Naomi_Input);
+    connect(this->action_Atom_Input, &QAction::triggered, this, &MainWindow::on_Action_Atom_Input);
     connect(this->action_Arcade_Dip, &QAction::triggered, this, &MainWindow::on_Action_Arcade_Dip);
     connect(this->action_Arcade_Test, &QAction::triggered, this, &MainWindow::on_Action_Arcade_Test);
     connect(this->action_Toolbar_Input, &QAction::triggered, this, &MainWindow::on_Action_Settings_Input);
@@ -3285,6 +3288,12 @@ void MainWindow::connectActionSignals(void)
             this, &MainWindow::on_Action_Arcade_Input);
     connect(this->action_Toolbar_PsxInput, &QAction::triggered,
             this, &MainWindow::on_Action_Psx_Input);
+    connect(this->action_Toolbar_DcInput, &QAction::triggered,
+            this, &MainWindow::on_Action_Dc_Input);
+    connect(this->action_Toolbar_NaomiInput, &QAction::triggered,
+            this, &MainWindow::on_Action_Naomi_Input);
+    connect(this->action_Toolbar_AtomInput, &QAction::triggered,
+            this, &MainWindow::on_Action_Atom_Input);
     connect(this->action_Toolbar_Playback, &QAction::triggered, this, &MainWindow::on_Action_Playback);
 
     connect(this->action_View_Toolbar, &QAction::toggled, this, &MainWindow::on_Action_View_Toolbar);
@@ -4602,7 +4611,25 @@ void MainWindow::on_Action_Arcade_Input(void)
 
 void MainWindow::on_Action_Psx_Input(void)
 {
-    Dialog::PsxInputDialog dialog(this);
+    Dialog::PsxInputDialog dialog(Dialog::LibretroInputProfileId::Psx, this);
+    dialog.exec();
+}
+
+void MainWindow::on_Action_Dc_Input(void)
+{
+    Dialog::PsxInputDialog dialog(Dialog::LibretroInputProfileId::Dreamcast, this);
+    dialog.exec();
+}
+
+void MainWindow::on_Action_Naomi_Input(void)
+{
+    Dialog::PsxInputDialog dialog(Dialog::LibretroInputProfileId::Naomi, this);
+    dialog.exec();
+}
+
+void MainWindow::on_Action_Atom_Input(void)
+{
+    Dialog::PsxInputDialog dialog(Dialog::LibretroInputProfileId::Atomiswave, this);
     dialog.exec();
 }
 

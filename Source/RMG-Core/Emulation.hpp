@@ -41,10 +41,23 @@ typedef void (*CoreFbneoStopCallback)(void* user);
 void CoreSetFbneoFrameCallback(CoreFbneoFrameCallback callback, void* user);
 void CoreSetFbneoStopCallback(CoreFbneoStopCallback callback, void* user);
 
-// PlayStation (libretro) session queries/input. CoreIsLibretroSessionActive()
-// reports whether the current session is driven by a libretro core. PS1 input
-// packets are 12 bytes per player, see LibretroRuntime.hpp for the layout.
+// libretro session queries/input. CoreIsLibretroSessionActive() reports whether
+// the current session is driven by a libretro core (PlayStation, Dreamcast,
+// NAOMI or Atomiswave). All of them share the same 12-byte-per-player input
+// packet, see LibretroRuntime.hpp for the layout.
+enum class CoreLibretroSystem
+{
+    Psx        = 0,
+    Dreamcast  = 1,
+    Naomi      = 2,
+    Atomiswave = 3,
+};
+
 bool CoreIsLibretroSessionActive(void);
+
+// Machine family of the active session (Psx when idle). Drives which input
+// profile the frontend polls and which storage directories the core sees.
+CoreLibretroSystem CoreGetLibretroSystem(void);
 
 // Content file the libretro runtime has loaded (.cue/.chd/...). Empty when no
 // libretro session is running. Used for save-state naming, which has no
@@ -66,6 +79,12 @@ std::string CoreGetPsxCoreName(void);
 // in the browser and the lobby) and `contentId` (peer-shared id the lobby uses
 // to match rooms).
 bool CoreGetPsxRomInfo(const std::filesystem::path& file, std::string& gameName, std::string& contentId);
+
+// Same query for any libretro family. Fills `system` with the machine the core
+// would be started with (Dreamcast for .gdi/.cdi/.elf, NAOMI for .lst/.dat,
+// directory hints otherwise, PS1 for the remaining disc formats).
+bool CoreGetLibretroRomInfo(const std::filesystem::path& file, CoreLibretroSystem& system,
+                            std::string& gameName, std::string& contentId);
 
 // FBNeo live input. playerIndex is 0-based. The mask bit order matches the
 // names returned by CoreGetFbneoPlayerInputName (bit b == input b). These are

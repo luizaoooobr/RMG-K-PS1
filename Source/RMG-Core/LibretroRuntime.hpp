@@ -32,6 +32,18 @@
 
 namespace libretro_rt
 {
+    // Logical machine driven by the currently loaded libretro core. The core
+    // itself detects NAOMI vs Atomiswave from the content; the host still needs
+    // the family to pick the right core binary, the right storage directories
+    // and the right input profile.
+    enum class System
+    {
+        Psx        = 0,
+        Dreamcast  = 1,
+        Naomi      = 2,
+        Atomiswave = 3,
+    };
+
     // Frame output flags (matches CoreFrameOutputFlags semantics).
     enum FrameOutputFlags
     {
@@ -70,15 +82,19 @@ namespace libretro_rt
     // saveDir    : directory the core uses for its own save files (memory cards).
     // players    : number of seats whose input packets are maintained.
     bool Initialize(const char* corePath, const char* gamePath, const char* systemDir,
-                    const char* saveDir, int players);
+                    const char* saveDir, int players, System system = System::Psx);
     bool IsInitialized();
     void Shutdown();
+    System CurrentSystem();
 
     // retro_reset(): soft reset of the loaded content.
     bool Reset();
 
-    // True when `path` looks like a disc image this runtime can load.
-    bool IsMediaFile(const char* path);
+    // True when `path` looks like content this runtime can load. When `detected`
+    // is not null it receives the machine family inferred from the path; DC
+    // content inside .zip/.7z/.rar is only claimed when its location names the
+    // system, because FBNeo owns the arcade romsets by default.
+    bool IsMediaFile(const char* path, System* detected = nullptr);
 
     // Human readable core name ("Sony - PlayStation (Beetle PSX)"...) and the
     // peer-shared content identifier (<= 64 chars, hex). Empty when idle.

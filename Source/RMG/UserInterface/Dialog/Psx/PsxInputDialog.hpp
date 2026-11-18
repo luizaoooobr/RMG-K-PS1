@@ -1,6 +1,8 @@
 #ifndef PSXINPUTDIALOG_HPP
 #define PSXINPUTDIALOG_HPP
 
+#include "LibretroInputProfile.hpp"
+
 #include <QDialog>
 #include <QTimer>
 #include <QString>
@@ -17,14 +19,17 @@ namespace UserInterface
 namespace Dialog
 {
 
-// PlayStation input remapper using the same capture mechanism as the arcade
-// dialog: keyboard, gamepad and joystick, with proper baseline seeding.
+// Input remapper for every libretro-driven machine (PlayStation, Dreamcast,
+// NAOMI, Atomiswave), using the same capture mechanism as the arcade dialog:
+// keyboard, gamepad and joystick, with proper baseline seeding. Each profile
+// has its own settings section so mappings never leak between systems.
 class PsxInputDialog : public QDialog
 {
     Q_OBJECT
 
 public:
-    explicit PsxInputDialog(QWidget* parent = nullptr);
+    explicit PsxInputDialog(LibretroInputProfileId profile = LibretroInputProfileId::Psx,
+                            QWidget* parent = nullptr);
     ~PsxInputDialog() override;
 
 protected:
@@ -72,6 +77,9 @@ private:
     std::vector<CaptureDevice> m_captureDevices;
 
     Binding m_capturedBinding;
+
+    LibretroInputProfileId m_profileId = LibretroInputProfileId::Psx;
+    const LibretroInputProfile* m_profile = nullptr;
 
     int m_deviceType[4];
 };

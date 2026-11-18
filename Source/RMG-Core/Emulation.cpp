@@ -252,8 +252,10 @@ static bool s_FbneoSessionActive = false;
 // skip the mupen64plus M64CMD_STOP path.
 static bool s_LibretroSessionActive = false;
 // Content the active libretro session was started with (used by the frontend to
-// recognize PS1 discs when it needs the same decision the core took).
+// recognize libretro content when it needs the same decision the core took).
 static std::filesystem::path s_LibretroTarget;
+// Machine family of that session; drives the frontend's input profile.
+static CoreLibretroSystem s_LibretroSystem = CoreLibretroSystem::Psx;
 
 #ifdef NETPLAY
 // Maximum players supported by Kaillera
@@ -1067,48 +1069,71 @@ static void fbneo_size_rollback_state()
 }
 
 // ---------------------------------------------------------------------------
-// PlayStation (libretro) session glue.
+// libretro session glue (PlayStation, Dreamcast, NAOMI and Atomiswave).
 //
-// A PS1 disc is neither an N64 ROM nor an arcade romset, so it bypasses both the
+// These files are neither N64 ROMs nor FBNeo romsets, so they bypass both the
 // mupen64plus ROM gate and FBNeo. The core is a separate libretro shared library
-// loaded at runtime (Beetle PSX by default), driven through LibretroRuntime and
-// the same GekkoNet rollback loop the arcade sessions use.
+// loaded at runtime (swanstation or parallel-dc), driven through LibretroRuntime
+// and the same GekkoNet rollback loop the arcade sessions use.
 // ---------------------------------------------------------------------------
 
-static std::vector<std::string> libretro_core_candidates()
+static const char* libretro_system_dir_name(libretro_rt::System system)
 {
+    switch (system)
+    {
+        case libretro_rt::System::Dreamcast:  return "dreamcast";
+        case libretro_rt::System::Naomi:      return "naomi";
+        case libretro_rt::System::Atomiswave: return "atomiswave";
+        default:                              return "psx";
+    }
+}
+
+static std::vector<std::string> libretro_core_candidates(libretro_rt::System system)
+{
+    if (system != libretro_rt::System::Psx)
+    {
+#if defined(_WIN32)
+        return { "parallel_dc_libretro.dll" };
+#elif defined(__APPLE__)
+        return { "parallel_dc_libretro.dylib" };
+#else
+        return { "parallel_dc_libretro.so" };
+#endif
+    }
 #if defined(_WIN32)
     return {
+        "swanstation_libretro.dll",
         "mednafen_psx_libretro.dll",
         "beetle_psx_libretro.dll",
         "beetle_psx_hw_libretro.dll",
-        "swanstation_libretro.dll",
         "pcsx_rearmed_libretro.dll",
     };
 #elif defined(__APPLE__)
     return {
+        "swanstation_libretro.dylib",
         "mednafen_psx_libretro.dylib",
         "beetle_psx_libretro.dylib",
         "beetle_psx_hw_libretro.dylib",
-        "swanstation_libretro.dylib",
         "pcsx_rearmed_libretro.dylib",
     };
 #else
     return {
+        "swanstation_libretro.so",
         "mednafen_psx_libretro.so",
         "beetle_psx_libretro.so",
         "beetle_psx_hw_libretro.so",
-        "swanstation_libretro.so",
         "pcsx_rearmed_libretro.so",
     };
 #endif
 }
 
-// Resolves the libretro core to load: RMGK_PSX_CORE first (handy for testing a
-// specific build), then the usual directories next to the executable.
-static std::filesystem::path libretro_find_core()
+// Resolves the libretro core to load: a per-family override first (handy for
+// testing a specific build), then the usual directories next to the executable.
+static std::filesystem::path libretro_find_core(
+    libretro_rt::System system = libretro_rt::System::Psx)
 {
-    const char* env = std::getenv("RMGK_PSX_CORE");
+    const char* env = (system == libretro_rt::System::Psx)
+                    ? std::getenv("RMGK_PSX_CORE") : std::getenv("RMGK_DC_CORE");
     if (env != nullptr && env[0] != '\0')
     {
         std::filesystem::path path = env;
@@ -1126,7 +1151,7 @@ static std::filesystem::path libretro_find_core()
 
     for (const auto& directory : directories)
     {
-        for (const auto& name : libretro_core_candidates())
+        for (const auto& name : libretro_core_candidates(system))
         {
             std::filesystem::path candidate = directory / name;
             std::error_code ec;
@@ -1140,39 +1165,61 @@ static std::filesystem::path libretro_find_core()
     return std::filesystem::path();
 }
 
-// BIOS directory. Beetle PSX looks for scph5501.bin / openbios.bin here, and the
-// save dir holds memory cards. Both are per-user so a portable install never
-// writes next to the executable.
-static std::filesystem::path libretro_system_directory()
+// System/BIOS directory. Synchronized sessions get an isolated tree: the core
+// must never read (or overwrite) the player's BIOS config, VMUs or flash file,
+// and both peers must boot from the same fresh machine state.
+static std::filesystem::path libretro_system_directory(
+    libretro_rt::System system = libretro_rt::System::Psx, bool isolated = false)
 {
-    const char* env = std::getenv("RMGK_PSX_SYSTEM");
+    const char* env = (system == libretro_rt::System::Psx)
+                    ? std::getenv("RMGK_PSX_SYSTEM") : std::getenv("RMGK_DC_SYSTEM");
     if (env != nullptr && env[0] != '\0')
     {
         return std::filesystem::path(env).make_preferred();
     }
-    return (CoreGetUserDataDirectory() / "psx" / "system").make_preferred();
+    const std::filesystem::path base = CoreGetUserDataDirectory();
+    const char* name = libretro_system_dir_name(system);
+    return (isolated ? (base / "netplay" / name / "system")
+                     : (base / name / "system")).make_preferred();
 }
 
-static std::filesystem::path libretro_save_directory()
+static std::filesystem::path libretro_save_directory(
+    libretro_rt::System system = libretro_rt::System::Psx, bool isolated = false)
 {
-    return (CoreGetSaveDirectory() / "psx").make_preferred();
+    const char* name = libretro_system_dir_name(system);
+    if (isolated)
+    {
+        return (CoreGetUserDataDirectory() / "netplay" / name / "save").make_preferred();
+    }
+    return (CoreGetSaveDirectory() / name).make_preferred();
 }
 
 // Boots the libretro core for `rom`. Leaves the rollback surface pointed at the
 // libretro runtime and sizes the GekkoNet state ring from the core's own
 // serializer, so nothing downstream needs to know which emulator is loaded.
-static bool libretro_start_runtime(const std::filesystem::path& rom, int players, bool remotePeers = false)
+static bool libretro_start_runtime(const std::filesystem::path& rom,
+                                   libretro_rt::System system, int players,
+                                   bool remotePeers = false)
 {
-    const std::filesystem::path core = libretro_find_core();
+    const std::filesystem::path core = libretro_find_core(system);
     if (core.empty())
     {
-        CoreSetError("CoreStartEmulation: no PS1 libretro core found (set RMGK_PSX_CORE "
-                     "or put mednafen_psx_libretro in the cores directory)");
+        const char* envName = (system == libretro_rt::System::Psx)
+                            ? "RMGK_PSX_CORE" : "RMGK_DC_CORE";
+        const char* coreName = (system == libretro_rt::System::Psx)
+                             ? "swanstation_libretro" : "parallel_dc_libretro";
+        CoreSetError(std::string("CoreStartEmulation: no libretro core found for ") +
+            libretro_system_dir_name(system) + " (set " + envName + " or put " +
+            coreName + " in the cores directory)");
         return false;
     }
 
-    const std::filesystem::path systemDir = libretro_system_directory();
-    const std::filesystem::path saveDir   = libretro_save_directory();
+    // A network session gets throw-away storage: neither peer may read or
+    // overwrite the player's memory cards/VMUs, and both machines must boot
+    // from the same fresh machine state. Offline sessions keep using disk.
+    const bool isolated = remotePeers;
+    const std::filesystem::path systemDir = libretro_system_directory(system, isolated);
+    const std::filesystem::path saveDir   = libretro_save_directory(system, isolated);
     std::error_code ec;
     std::filesystem::create_directories(systemDir, ec);
     std::filesystem::create_directories(saveDir, ec);
@@ -1189,10 +1236,11 @@ static bool libretro_start_runtime(const std::filesystem::path& rom, int players
     const std::string savePath   = saveDir.string();
 
     if (!libretro_rt::Initialize(corePath.c_str(), gamePath.c_str(),
-            systemPath.c_str(), savePath.c_str(), players))
+            systemPath.c_str(), savePath.c_str(), players, system))
     {
         const std::string rtError = CoreGetError();
-        CoreSetError("CoreStartEmulation: PS1 core initialization failed" +
+        CoreSetError("CoreStartEmulation: " + std::string(libretro_system_dir_name(system)) +
+            " core initialization failed" +
             (rtError.empty() ? std::string() : (": " + rtError)));
         CoreRollbackSetCore(CoreRollbackCore::Mupen);
         return false;
@@ -1201,7 +1249,8 @@ static bool libretro_start_runtime(const std::filesystem::path& rom, int players
     const int stateSize = libretro_rt::SerializeSize();
     if (stateSize <= 0)
     {
-        CoreSetError("CoreStartEmulation: PS1 core cannot serialize state (rollback impossible)");
+        CoreSetError("CoreStartEmulation: " + std::string(libretro_system_dir_name(system)) +
+            " core cannot serialize state (rollback impossible)");
         libretro_rt::Shutdown();
         CoreRollbackSetCore(CoreRollbackCore::Mupen);
         return false;
@@ -1213,18 +1262,42 @@ static bool libretro_start_runtime(const std::filesystem::path& rom, int players
 
     s_LibretroSessionActive = true;
     s_LibretroTarget        = rom;
+    s_LibretroSystem        = (system == libretro_rt::System::Psx)
+        ? CoreLibretroSystem::Psx
+        : (system == libretro_rt::System::Dreamcast)
+            ? CoreLibretroSystem::Dreamcast
+            : (system == libretro_rt::System::Naomi)
+                ? CoreLibretroSystem::Naomi : CoreLibretroSystem::Atomiswave;
     CoreAddCallbackMessage(CoreDebugMessageType::Info,
         std::string("CoreStartEmulation: libretro core=") + libretro_rt::CoreName() +
+        " system=" + libretro_system_dir_name(system) +
         " state=" + std::to_string(stateSize) + "B capacity=" +
         std::to_string(rmgk_gekko::state_capacity_bytes()) + "B");
     return true;
 }
 
-// Per-seat input packet size for the rollback session (12 bytes for PS1,
-// 4 bytes for FBNeo).
+// Per-seat input packet size for the rollback session (12 bytes for every
+// libretro family, 4 bytes for FBNeo).
 static int libretro_input_size()
 {
     return libretro_rt::InputBytesPerPlayer();
+}
+
+// GekkoNet session ids are per machine family so a PS1 host never pairs with a
+// Dreamcast host by accident (the state blob sizes and input maps differ).
+static const char* libretro_session_id(CoreLibretroSystem system, bool local)
+{
+    switch (system)
+    {
+        case CoreLibretroSystem::Dreamcast:
+            return local ? "rmgk-gekko-local-dc" : "rmgk-gekko-dc";
+        case CoreLibretroSystem::Naomi:
+            return local ? "rmgk-gekko-local-naomi" : "rmgk-gekko-naomi";
+        case CoreLibretroSystem::Atomiswave:
+            return local ? "rmgk-gekko-local-atom" : "rmgk-gekko-atom";
+        default:
+            return local ? "rmgk-gekko-local-psx" : "rmgk-gekko-psx";
+    }
 }
 
 // FBNeo presentation hooks registered by the frontend.
@@ -1255,6 +1328,11 @@ std::filesystem::path CoreGetLibretroContentPath(void)
     return s_LibretroTarget;
 }
 
+CoreLibretroSystem CoreGetLibretroSystem(void)
+{
+    return s_LibretroSystem;
+}
+
 void CoreSetPsxLocalInput(int playerIndex, const void* bytes, int size)
 {
     if (!s_LibretroSessionActive || bytes == nullptr)
@@ -1268,21 +1346,36 @@ void CoreSetPsxLocalInput(int playerIndex, const void* bytes, int size)
     libretro_rt::SetLocalInput(playerIndex, static_cast<const uint8_t*>(bytes));
 }
 
+static CoreLibretroSystem from_libretro_system(libretro_rt::System system)
+{
+    switch (system)
+    {
+        case libretro_rt::System::Dreamcast:  return CoreLibretroSystem::Dreamcast;
+        case libretro_rt::System::Naomi:      return CoreLibretroSystem::Naomi;
+        case libretro_rt::System::Atomiswave: return CoreLibretroSystem::Atomiswave;
+        default:                              return CoreLibretroSystem::Psx;
+    }
+}
+
 std::string CoreGetPsxCoreName(void)
 {
+    const libretro_rt::System system = s_LibretroSessionActive
+        ? libretro_rt::CurrentSystem() : libretro_rt::System::Psx;
     if (s_LibretroSessionActive)
     {
         return std::string(libretro_rt::CoreName());
     }
 
-    const std::filesystem::path core = libretro_find_core();
+    const std::filesystem::path core = libretro_find_core(system);
     return core.empty() ? std::string() : core.filename().string();
 }
 
-bool CoreGetPsxRomInfo(const std::filesystem::path& file, std::string& gameName, std::string& contentId)
+bool CoreGetLibretroRomInfo(const std::filesystem::path& file, CoreLibretroSystem& system,
+                            std::string& gameName, std::string& contentId)
 {
+    libretro_rt::System detected = libretro_rt::System::Psx;
     const std::string path = file.string();
-    if (!libretro_rt::IsMediaFile(path.c_str()))
+    if (!libretro_rt::IsMediaFile(path.c_str(), &detected))
     {
         return false;
     }
@@ -1293,8 +1386,16 @@ bool CoreGetPsxRomInfo(const std::filesystem::path& file, std::string& gameName,
         return false;
     }
 
+    system    = from_libretro_system(detected);
     contentId = libretro_rt::ContentIdForPath(path.c_str());
     return !contentId.empty();
+}
+
+bool CoreGetPsxRomInfo(const std::filesystem::path& file, std::string& gameName, std::string& contentId)
+{
+    CoreLibretroSystem system = CoreLibretroSystem::Psx;
+    return CoreGetLibretroRomInfo(file, system, gameName, contentId) &&
+           system == CoreLibretroSystem::Psx;
 }
 
 void CoreSetFbneoStopCallback(CoreFbneoStopCallback callback, void* user)
@@ -1489,12 +1590,17 @@ bool CoreStartEmulation(std::filesystem::path n64rom, std::filesystem::path n64d
         fbneo_rt::Trace("unsupported console dump: " + n64rom.filename().string());
         return false;
     }
-    // PlayStation discs bypass it as well: they are played by a libretro core.
-    const bool psxTarget = !fbneoTarget && libretro_rt::IsMediaFile(n64rom.string().c_str());
+    // PlayStation discs and Dreamcast/NAOMI/Atomiswave content bypass it as
+    // well: they are played by a libretro core. FBNeo had first refusal above,
+    // so an arcade romset listed by a driver is never routed here.
+    libretro_rt::System libretroRtSystem = libretro_rt::System::Psx;
+    const bool libretroTarget = !fbneoTarget &&
+        libretro_rt::IsMediaFile(n64rom.string().c_str(), &libretroRtSystem);
+    const CoreLibretroSystem libretroSystem = from_libretro_system(libretroRtSystem);
     // Point the rollback surface at the runtime this session drives *before*
     // any session is created: start_*_session installs the core input callback
     // and sizes the state ring from the selected runtime.
-    CoreRollbackSetCore(psxTarget ? CoreRollbackCore::Libretro
+    CoreRollbackSetCore(libretroTarget ? CoreRollbackCore::Libretro
                         : (fbneoTarget ? CoreRollbackCore::Fbneo
                                        : CoreRollbackCore::Mupen));
     // Size the rollback state ring for the runtime that will drive this session.
@@ -1505,18 +1611,19 @@ bool CoreStartEmulation(std::filesystem::path n64rom, std::filesystem::path n64d
     {
         rmgk_gekko::set_state_capacity_bytes(rmgk_gekko::kFbneoStateCapacityBytes);
     }
-    else if (!psxTarget)
+    else if (!libretroTarget)
     {
         rmgk_gekko::set_state_capacity_bytes(rmgk_gekko::kMupenStateCapacityBytes);
     }
     s_FbneoSessionActive = fbneoTarget;
     s_LibretroSessionActive = false;
-    if (!psxTarget)
+    s_LibretroSystem = CoreLibretroSystem::Psx;
+    if (!libretroTarget)
     {
         s_LibretroTarget.clear();
     }
 
-    if (!fbneoTarget && !psxTarget)
+    if (!fbneoTarget && !libretroTarget)
     {
         if (!CoreOpenRom(n64rom))
         {
@@ -1594,7 +1701,7 @@ bool CoreStartEmulation(std::filesystem::path n64rom, std::filesystem::path n64d
     // the explicit "local rollback testing" toggle is off. A PS1 disc works the
     // same way: there is no mupen64plus fallback for it.
     const bool localRollbackEnabled = !netplay &&
-        (CoreSettingsGetBoolValue(SettingsID::Rollback_EnableLocalTesting) || fbneoTarget || psxTarget);
+        (CoreSettingsGetBoolValue(SettingsID::Rollback_EnableLocalTesting) || fbneoTarget || libretroTarget);
 
     // FBNeo backend: resolve the driver name and archive list once for every
     // session start path below (P2P, lobby, local rollback).
@@ -1699,12 +1806,12 @@ bool CoreStartEmulation(std::filesystem::path n64rom, std::filesystem::path n64d
                         }
                     }
                 }
-                else if (psxTarget)
+                else if (libretroTarget)
                 {
                     // Kaillera recordings (.krec) store FBNeo's 4-byte input
-                    // words; a PS1 packet is 12 bytes wide, so replay/spectate
-                    // of a disc does not have a representation yet.
-                    CoreSetError("CoreStartEmulation: Kaillera replay is not supported for PS1 discs");
+                    // words; a libretro packet is 12 bytes wide, so replay/spectate
+                    // of libretro content does not have a representation yet.
+                    CoreSetError("CoreStartEmulation: Kaillera replay is not supported for libretro content");
                     m64p_ret = M64ERR_INCOMPATIBLE;
                     netplay_ret = false;
                 }
@@ -1730,12 +1837,13 @@ bool CoreStartEmulation(std::filesystem::path n64rom, std::filesystem::path n64d
             else
             {
                 CoreSettingsSetValue(SettingsID::Core_CPU_Emulator, 2);
-                if (psxTarget)
+                if (libretroTarget)
                 {
-                    netplay_ret = libretro_start_runtime(n64rom, 2, true);
+                    netplay_ret = libretro_start_runtime(n64rom, libretroRtSystem, 2, true);
                     if (netplay_ret)
                     {
-                        netplay_ret = rmgk_gekko::start_p2p_session("rmgk-gekko-psx",
+                        netplay_ret = rmgk_gekko::start_p2p_session(
+                            libretro_session_id(libretroSystem, false),
                             2, libretro_input_size(), player, static_cast<unsigned short>(port),
                             remoteAddress.c_str(), static_cast<unsigned short>(remotePort), frameDelay, predictionWindow);
                     }
@@ -1820,12 +1928,13 @@ bool CoreStartEmulation(std::filesystem::path n64rom, std::filesystem::path n64d
                     if (remote.slot > totalSeats)
                         totalSeats = remote.slot;
                 }
-                if (psxTarget)
+                if (libretroTarget)
                 {
-                    netplay_ret = libretro_start_runtime(n64rom, totalSeats, true);
+                    netplay_ret = libretro_start_runtime(n64rom, libretroRtSystem, totalSeats, true);
                     if (netplay_ret)
                     {
-                        netplay_ret = rmgk_gekko::start_lobby_session("rmgk-gekko-psx",
+                        netplay_ret = rmgk_gekko::start_lobby_session(
+                            libretro_session_id(libretroSystem, false),
                             totalSeats, libretro_input_size(),
                             player, static_cast<unsigned short>(port),
                             remotes.data(), static_cast<int>(remotes.size()),
@@ -1906,7 +2015,7 @@ bool CoreStartEmulation(std::filesystem::path n64rom, std::filesystem::path n64d
     // save files.
     if (!CoreApplyNetplaySaveData(syncedSession))
     {
-        if (!fbneoTarget && !psxTarget)
+        if (!fbneoTarget && !libretroTarget)
         {
             CoreClearCheats();
             CoreDetachPlugins();
@@ -1927,17 +2036,18 @@ bool CoreStartEmulation(std::filesystem::path n64rom, std::filesystem::path n64d
         else
         {
             CoreSettingsSetValue(SettingsID::Core_CPU_Emulator, 2);
-            if (psxTarget)
+            if (libretroTarget)
             {
-                const bool psxInit = libretro_start_runtime(n64rom, 4);
-                if (!psxInit)
+                const bool libretroInit = libretro_start_runtime(n64rom, libretroRtSystem, 4);
+                if (!libretroInit)
                 {
                     m64p_ret = M64ERR_SYSTEM_FAIL;
                     netplay_ret = false;
                 }
                 else
                 {
-                    netplay_ret = rmgk_gekko::start_local_session("rmgk-gekko-local-psx",
+                    netplay_ret = rmgk_gekko::start_local_session(
+                        libretro_session_id(libretroSystem, true),
                         4, libretro_input_size(), 0);
                     rollbackExecute = netplay_ret;
                     if (!netplay_ret)
@@ -2016,7 +2126,7 @@ bool CoreStartEmulation(std::filesystem::path n64rom, std::filesystem::path n64d
     // (Mupen64Plus built-in) or Kaillera session keeps the normal M64CMD_EXECUTE
     // path.
     if (netplay && netplay_ret &&
-        (fbneoTarget || psxTarget ||
+        (fbneoTarget || libretroTarget ||
          address.rfind("GEKKO|", 0) == 0 || address.rfind("LOBBY|", 0) == 0))
     {
         rollbackExecute = true;
@@ -2072,7 +2182,7 @@ bool CoreStartEmulation(std::filesystem::path n64rom, std::filesystem::path n64d
         {
             m64p_ret = m64p::Core.DoCommand(M64CMD_EXECUTE, 0, nullptr);
         }
-        if (rollbackExecute && (fbneoTarget || psxTarget) && rmgk_gekko::is_stop_requested())
+        if (rollbackExecute && (fbneoTarget || libretroTarget) && rmgk_gekko::is_stop_requested())
         {
             // A user-initiated stop of an arcade (FBNeo) or PS1 session ends the
             // frame loop with a "failure" return from execute(); that is the
@@ -2111,7 +2221,7 @@ bool CoreStartEmulation(std::filesystem::path n64rom, std::filesystem::path n64d
     // The frontend tears down its FBNeo video/audio output on the emulation
     // thread right after the frame loop ends, while its GL context is still
     // current.
-    if (rollbackExecute && (fbneoTarget || psxTarget) && s_fbneoStopCallback)
+    if (rollbackExecute && (fbneoTarget || libretroTarget) && s_fbneoStopCallback)
     {
         s_fbneoStopCallback(s_fbneoStopUser);
     }
@@ -2132,6 +2242,7 @@ bool CoreStartEmulation(std::filesystem::path n64rom, std::filesystem::path n64d
     {
         libretro_rt::Shutdown();
         s_LibretroSessionActive = false;
+        s_LibretroSystem = CoreLibretroSystem::Psx;
         // Hand the rollback surface back to the mupen64plus runtime so a later
         // N64 session behaves exactly as before.
         CoreRollbackSetCore(CoreRollbackCore::Mupen);
@@ -2170,7 +2281,7 @@ bool CoreStartEmulation(std::filesystem::path n64rom, std::filesystem::path n64d
     // Arcade (FBNeo) and PS1 (libretro) sessions never opened an N64 ROM or
     // attached the mupen64plus plugins, so the ROM/plugin teardown must be
     // skipped (it would fail with "cannot close rom when no rom is open!").
-    if (!fbneoTarget && !psxTarget)
+    if (!fbneoTarget && !libretroTarget)
     {
         CoreClearCheats();
         CoreDetachPlugins();

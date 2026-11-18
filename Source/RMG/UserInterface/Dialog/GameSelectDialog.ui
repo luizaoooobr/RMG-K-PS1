@@ -57,6 +57,21 @@
          <string>PlayStation</string>
         </property>
        </item>
+       <item>
+        <property name="text">
+         <string>Dreamcast</string>
+        </property>
+       </item>
+       <item>
+        <property name="text">
+         <string>NAOMI</string>
+        </property>
+       </item>
+       <item>
+        <property name="text">
+         <string>Atomiswave</string>
+        </property>
+       </item>
       </widget>
      </item>
      <item>

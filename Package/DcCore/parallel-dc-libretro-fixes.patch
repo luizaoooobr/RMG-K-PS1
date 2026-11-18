@@ -1,0 +1,25 @@
+diff --git a/core/libretro/libretro.cpp b/core/libretro/libretro.cpp
+index dd35da3..33a6cd7 100644
+--- a/core/libretro/libretro.cpp
++++ b/core/libretro/libretro.cpp
+@@ -1,7 +1,11 @@
++/* serialize.h declares the lr_*_v23 state hooks with C linkage. It must be
++ * included even when no HDR renderer is built: serialize.c (C) calls those
++ * hooks, and the definitions at the bottom of this file would otherwise get
++ * C++ linkage and fail to link. */
++#include "serialize.h"
+ #if defined(HAVE_VULKAN) || defined(HAVE_D3D11) || defined(HAVE_D3D12)
+ /* (the renderers that have the HDR output: Color Format) */
+ #define HAVE_HDR_OUTPUT
+-#include "serialize.h"
+ #include "rend/hdr/hdr_libretro.h"
+ #include "rend/hdr/hdr_output.h"
+ #endif
+@@ -81,6 +85,7 @@ void texcache_scratch_largest(void);
+ #include "hw/maple/maple_if.h"
+ #include "hw/maple/vmu_beep.h"
+ #include "oslib/audiostream.h"
++#include "oslib/oslib.h"
+ #include "hw/maple/maple_cfg.h"
+ #include "../hw/pvr/spg.h"
+ #include "../hw/pvr/ta.h"

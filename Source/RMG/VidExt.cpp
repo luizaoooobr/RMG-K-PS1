@@ -20,6 +20,7 @@
 #include <RMG-Core/Video.hpp>
 
 #include "OnScreenDisplay.hpp"
+#include "UserInterface/Dialog/Psx/LibretroInputProfile.hpp"
 #include "Utilities/QtKeyToSdl3Key.hpp"
 
 #include <QVulkanInstance>
@@ -1664,6 +1665,42 @@ static bool evalFbneoBindings(const std::vector<FbneoBinding>& bindings, const b
     return false;
 }
 
+// Live input state for one libretro profile. Indexes match
+// LibretroInputProfileId; index 0 is the original PlayStation layout, kept
+// byte-for-byte compatible with the settings saved by older builds.
+struct LibretroPadState
+{
+    int keys[16] = { 0 };
+    std::unordered_map<std::string, std::vector<FbneoBinding>> bindings;
+    FbneoArcadePlayer players[FBNEO_MAX_PLAYERS];
+    SDL_Gamepad* gamepad  = nullptr;
+    SDL_Joystick* joystick = nullptr;
+};
+
+static const UserInterface::Dialog::LibretroInputProfile& libretroPadProfile(int index)
+{
+    using UserInterface::Dialog::LibretroInputProfileId;
+    using UserInterface::Dialog::libretroInputProfile;
+    switch (index)
+    {
+        case 1:  return libretroInputProfile(LibretroInputProfileId::Dreamcast);
+        case 2:  return libretroInputProfile(LibretroInputProfileId::Naomi);
+        case 3:  return libretroInputProfile(LibretroInputProfileId::Atomiswave);
+        default: return libretroInputProfile(LibretroInputProfileId::Psx);
+    }
+}
+
+static int libretroPadProfileIndex(CoreLibretroSystem system)
+{
+    switch (system)
+    {
+        case CoreLibretroSystem::Dreamcast:  return 1;
+        case CoreLibretroSystem::Naomi:      return 2;
+        case CoreLibretroSystem::Atomiswave: return 3;
+        default:                             return 0;
+    }
+}
+
 class FbneoInputHandler : public QObject
 {
 public:
@@ -1681,7 +1718,10 @@ public:
 
         this->loadPlayers();
         this->openDevices();
-        this->loadPsxKeys();
+        for (int profile = 0; profile < 4; profile++)
+        {
+            this->loadLibretroKeys(profile);
+        }
 
         this->timer = new QTimer(this);
         this->timer->setInterval(8);
@@ -1691,17 +1731,21 @@ public:
 
     ~FbneoInputHandler() override
     {
-        if (this->psxGamepad != nullptr)
+        for (int profile = 0; profile < 4; profile++)
         {
-            SDL_CloseGamepad(this->psxGamepad);
-            this->psxGamepad = nullptr;
+            LibretroPadState& pad = this->libretroPads[profile];
+            if (pad.gamepad != nullptr)
+            {
+                SDL_CloseGamepad(pad.gamepad);
+                pad.gamepad = nullptr;
+            }
+            if (pad.joystick != nullptr)
+            {
+                SDL_CloseJoystick(pad.joystick);
+                pad.joystick = nullptr;
+            }
+            this->closeLibretroDevices(profile);
         }
-        if (this->psxJoystick != nullptr)
-        {
-            SDL_CloseJoystick(this->psxJoystick);
-            this->psxJoystick = nullptr;
-        }
-        this->closePsxDevices();
         this->closeDevices();
     }
 
@@ -1721,12 +1765,12 @@ public:
         }
     }
 
-    void reloadPsxKeys(void)
+    void reloadLibretroKeys(int profile)
     {
-        this->loadPsxKeys();
-        this->loadPsxPlayers();
-        this->closePsxDevices();
-        this->openPsxDevices();
+        this->loadLibretroKeys(profile);
+        this->loadLibretroPlayers(profile);
+        this->closeLibretroDevices(profile);
+        this->openLibretroDevices(profile);
     }
 
 protected:
@@ -1801,71 +1845,75 @@ private:
         }
     }
 
-    void loadPsxKeys(void)
+    void loadLibretroKeys(int profileIndex)
     {
-        const std::vector<int> data = CoreSettingsGetIntListValue(SettingsID::FBNeo_BindingData, "RMG PS1 Input - Global");
-        // defaults
-        static const int defaults[14] = {
-            SDL_SCANCODE_Z, SDL_SCANCODE_X, SDL_SCANCODE_A, SDL_SCANCODE_S,
-            SDL_SCANCODE_Q, SDL_SCANCODE_W, SDL_SCANCODE_E, SDL_SCANCODE_R,
-            SDL_SCANCODE_RETURN, SDL_SCANCODE_RSHIFT,
-            SDL_SCANCODE_UP, SDL_SCANCODE_DOWN, SDL_SCANCODE_LEFT, SDL_SCANCODE_RIGHT,
-        };
-        for (int i = 0; i < 14; i++)
+        const auto& profile = libretroPadProfile(profileIndex);
+        LibretroPadState& pad = this->libretroPads[profileIndex];
+        const std::vector<int> data = CoreSettingsGetIntListValue(
+            SettingsID::FBNeo_BindingData, profile.bindingSection);
+
+        for (int i = 0; i < profile.count; i++)
         {
-            this->psxKeys[i] = defaults[i];
+            pad.keys[i] = profile.defaults[i];
         }
-        if (data.size() >= 14)
+        if (data.size() >= static_cast<size_t>(profile.count))
         {
-            for (int i = 0; i < 14; i++)
+            for (int i = 0; i < profile.count; i++)
             {
                 if (data[i] > SDL_SCANCODE_UNKNOWN && data[i] < SDL_SCANCODE_COUNT)
                 {
-                    this->psxKeys[i] = data[i];
+                    pad.keys[i] = data[i];
                 }
             }
         }
         // Load the full binding lists (keyboard + gamepad + axes) saved by the
         // dialog, so gamepad buttons can be remapped too.
-        loadFbneoBindings(this->psxBbindings, "RMG PS1 Input - Global");
+        loadFbneoBindings(pad.bindings, profile.bindingSection);
     }
-    void loadPsxPlayers(void)
+
+    void loadLibretroPlayers(int profileIndex)
     {
+        const auto& profile = libretroPadProfile(profileIndex);
+        LibretroPadState& pad = this->libretroPads[profileIndex];
         for (int player = 0; player < FBNEO_MAX_PLAYERS; player++)
         {
-            FbneoArcadePlayer& psxPlayer = this->psxPlayers[player];
-            psxPlayer = FbneoArcadePlayer();
+            FbneoArcadePlayer& playerState = pad.players[player];
+            playerState = FbneoArcadePlayer();
 
-            const std::string section = "RMG PS1 Device - P" + std::to_string(player);
+            const std::string section =
+                std::string(profile.deviceSectionPrefix) + std::to_string(player);
             const int type = CoreSettingsGetIntValue(SettingsID::FBNeo_DeviceType, section);
-            // PS1 dialog values: 0=None, 1=Keyboard, 2=Gamepad/Joystick.
-            // None still opens the first free device so a mapping works even if
-            // the user forgot to pick a device.
-            psxPlayer.device = (type == 1) ? FbneoInputDevice_Keyboard : FbneoInputDevice_Joystick;
+            // Dialog values: 0=None, 1=Keyboard, 2=Gamepad/Joystick. None still
+            // opens the first free device so a mapping works even if the user
+            // forgot to pick one.
+            playerState.device = (type == 1) ? FbneoInputDevice_Keyboard
+                                             : FbneoInputDevice_Joystick;
         }
     }
 
-    void closePsxDevices(void)
+    void closeLibretroDevices(int profileIndex)
     {
-        for (FbneoArcadePlayer& psxPlayer : this->psxPlayers)
+        LibretroPadState& pad = this->libretroPads[profileIndex];
+        for (FbneoArcadePlayer& playerState : pad.players)
         {
-            if (psxPlayer.gamepad != nullptr)
+            if (playerState.gamepad != nullptr)
             {
-                SDL_CloseGamepad(psxPlayer.gamepad);
-                psxPlayer.gamepad = nullptr;
-                psxPlayer.joystick = nullptr;
+                SDL_CloseGamepad(playerState.gamepad);
+                playerState.gamepad = nullptr;
+                playerState.joystick = nullptr;
             }
-            else if (psxPlayer.joystick != nullptr)
+            else if (playerState.joystick != nullptr)
             {
-                SDL_CloseJoystick(psxPlayer.joystick);
-                psxPlayer.joystick = nullptr;
+                SDL_CloseJoystick(playerState.joystick);
+                playerState.joystick = nullptr;
             }
-            psxPlayer.deviceId = 0;
+            playerState.deviceId = 0;
         }
     }
 
-    void openPsxDevices(void)
+    void openLibretroDevices(int profileIndex)
     {
+        LibretroPadState& pad = this->libretroPads[profileIndex];
         SDL_PumpEvents();
         SDL_UpdateJoysticks();
 
@@ -1875,17 +1923,17 @@ private:
 
         for (int player = 0; player < FBNEO_MAX_PLAYERS; player++)
         {
-            FbneoArcadePlayer& psxPlayer = this->psxPlayers[player];
-            if (psxPlayer.device == FbneoInputDevice_None ||
-                psxPlayer.device == FbneoInputDevice_Keyboard)
+            FbneoArcadePlayer& playerState = pad.players[player];
+            if (playerState.device == FbneoInputDevice_None ||
+                playerState.device == FbneoInputDevice_Keyboard)
             {
                 continue;
             }
-            if (psxPlayer.gamepad != nullptr || psxPlayer.joystick != nullptr)
+            if (playerState.gamepad != nullptr || playerState.joystick != nullptr)
             {
                 for (int i = 0; i < count; i++)
                 {
-                    if (ids[i] == psxPlayer.deviceId) { used[i] = true; break; }
+                    if (ids[i] == playerState.deviceId) { used[i] = true; break; }
                 }
                 continue;
             }
@@ -1901,19 +1949,19 @@ private:
             }
 
             used[match] = true;
-            psxPlayer.deviceId = ids[match];
+            playerState.deviceId = ids[match];
             const SDL_JoystickID id = ids[match];
             if (SDL_IsGamepad(id))
             {
-                psxPlayer.gamepad = SDL_OpenGamepad(id);
-                if (psxPlayer.gamepad != nullptr)
+                playerState.gamepad = SDL_OpenGamepad(id);
+                if (playerState.gamepad != nullptr)
                 {
-                    psxPlayer.joystick = SDL_GetGamepadJoystick(psxPlayer.gamepad);
+                    playerState.joystick = SDL_GetGamepadJoystick(playerState.gamepad);
                 }
             }
             else
             {
-                psxPlayer.joystick = SDL_OpenJoystick(id);
+                playerState.joystick = SDL_OpenJoystick(id);
             }
         }
 
@@ -2060,9 +2108,12 @@ private:
 
     void poll(void)
     {
-        const bool psxActive = CoreIsLibretroSessionActive();
+        const bool libretroActive = CoreIsLibretroSessionActive();
+        // The core already reports the machine family; that selects which of
+        // the four saved input profiles must drive the 12-byte packets.
+        const int libretroProfile = libretroPadProfileIndex(CoreGetLibretroSystem());
 
-        bool active = psxActive;
+        bool active = libretroActive;
         if (!active)
         {
             for (int player = 0; player < FBNEO_MAX_PLAYERS; player++)
@@ -2091,19 +2142,20 @@ private:
             }
         }
 
-        // Same late-plug retry for the PlayStation pads, which have their own
+        // Same late-plug retry for the libretro pads, which have their own
         // device list and therefore would otherwise stay unopened forever.
-        bool needsOpenPsx = false;
-        if (psxActive)
+        bool needsOpenLibretro = false;
+        if (libretroActive)
         {
+            const LibretroPadState& pad = this->libretroPads[libretroProfile];
             for (int player = 0; player < FBNEO_MAX_PLAYERS; player++)
             {
-                const FbneoArcadePlayer& psxPlayer = this->psxPlayers[player];
-                if (psxPlayer.device != FbneoInputDevice_None &&
-                    psxPlayer.device != FbneoInputDevice_Keyboard &&
-                    psxPlayer.gamepad == nullptr && psxPlayer.joystick == nullptr)
+                const FbneoArcadePlayer& playerState = pad.players[player];
+                if (playerState.device != FbneoInputDevice_None &&
+                    playerState.device != FbneoInputDevice_Keyboard &&
+                    playerState.gamepad == nullptr && playerState.joystick == nullptr)
                 {
-                    needsOpenPsx = true;
+                    needsOpenLibretro = true;
                     break;
                 }
             }
@@ -2120,14 +2172,15 @@ private:
             this->closeDevices();
             this->loadPlayers();
             this->openDevices();
-            if (psxActive)
+            if (libretroActive)
             {
-                this->loadPsxPlayers();
-                this->closePsxDevices();
-                this->openPsxDevices();
+                this->loadLibretroKeys(libretroProfile);
+                this->loadLibretroPlayers(libretroProfile);
+                this->closeLibretroDevices(libretroProfile);
+                this->openLibretroDevices(libretroProfile);
             }
         }
-        else if (active && (needsOpen || needsOpenPsx) && this->m_openAttempts < 30 &&
+        else if (active && (needsOpen || needsOpenLibretro) && this->m_openAttempts < 30 &&
                  ++this->m_openRetryTicks >= 60)
         {
             this->m_openRetryTicks = 0;
@@ -2136,12 +2189,12 @@ private:
             {
                 this->openDevices();
             }
-            if (needsOpenPsx)
+            if (needsOpenLibretro)
             {
-                this->openPsxDevices();
+                this->openLibretroDevices(libretroProfile);
             }
         }
-        if (!needsOpen && !needsOpenPsx)
+        if (!needsOpen && !needsOpenLibretro)
         {
             this->m_openRetryTicks = 0;
         }
@@ -2156,9 +2209,9 @@ private:
             return;
         }
 
-        if (psxActive)
+        if (libretroActive)
         {
-            this->pollPsx();
+            this->pollLibretro(libretroProfile);
             return;
         }
 
@@ -2205,14 +2258,17 @@ private:
         }
     }
 
-    // PlayStation (libretro) pads. One 12-byte packet per seat:
+    // libretro pads (PlayStation / Dreamcast / NAOMI / Atomiswave). One 12-byte
+    // packet per seat:
     //   [0..1] u16 button mask (RETRO_DEVICE_ID_JOYPAD_*), [2..3] s16 LX,
     //   [4..5] s16 LY, [6..7] s16 RX, [8..9] s16 RY, [10..11] reserved.
-    // RMG-K uses a fixed PS1 keyboard layout (there is no per-game binding
-    // table for discs): arrows = D-pad, Z/X/A/S = Cross/Circle/Square/Triangle,
-    // Q/W = L1/R1, E/R = L2/R2, Enter = Start, Right Shift = Select.
-    void pollPsx(void)
+    // The profile decides which dialog row maps to which joypad bit; the core
+    // then translates those bits to DC/NAOMI/Atomiswave cabinet buttons.
+    void pollLibretro(int profileIndex)
     {
+        const auto& profile = libretroPadProfile(profileIndex);
+        LibretroPadState& padState = this->libretroPads[profileIndex];
+
         SDL_PumpEvents();
         SDL_UpdateJoysticks();
 
@@ -2227,7 +2283,7 @@ private:
 
         for (int player = 0; player < FBNEO_MAX_PLAYERS; player++)
         {
-            const FbneoArcadePlayer& psxPlayer = this->psxPlayers[player];
+            const FbneoArcadePlayer& playerState = padState.players[player];
 
             uint16_t mask = 0;
             int16_t  lx = 0;
@@ -2235,8 +2291,8 @@ private:
             int16_t  rx = 0;
             int16_t  ry = 0;
 
-            // Each player owns their own binding list, so the keyboard can be
-            // used by any port (P1, P2, ...) exactly like the dialog allows.
+            // Keyboard bindings (and the legacy P1 scancode fallback). The
+            // saved binding list is global but can be assigned to any port.
             {
                 const auto key = [this](int scancode)
                 {
@@ -2244,74 +2300,60 @@ private:
                         this->keyboardState[scancode];
                 };
 
-                // Evaluate remapped bindings first (keyboard + gamepad buttons).
-                // Fall back to the legacy single-scancode table when no binding
-                // was saved for a button.
-                const char* names[14] = {
-                    "PS1 Cross", "PS1 Circle", "PS1 Square", "PS1 Triangle",
-                    "PS1 L1", "PS1 R1", "PS1 L2", "PS1 R2",
-                    "PS1 Start", "PS1 Select",
-                    "PS1 D-Pad Up", "PS1 D-Pad Down", "PS1 D-Pad Left", "PS1 D-Pad Right",
-                };
-
-                auto bound = [&](int idx) -> bool {
-                    auto it = this->psxBbindings.find(names[idx]);
-                    if (it == this->psxBbindings.end() || it->second.empty())
+                for (int row = 0; row < profile.count; row++)
+                {
+                    bool pressed = false;
+                    const auto it = padState.bindings.find(profile.names[row]);
+                    if (it == padState.bindings.end() || it->second.empty())
                     {
-                        // The legacy single-scancode defaults describe P1 only;
-                        // other ports must be mapped explicitly in the dialog.
-                        return player == 0 ? key(this->psxKeys[idx]) : false;
+                        pressed = (player == 0) && key(padState.keys[row]);
                     }
-                    return evalFbneoBindings(it->second, this->keyboardState, nullptr, nullptr);
-                };
-
-                if (bound(10)) { mask |= 1u << 4;  ly = 32767; }
-                if (bound(11)) { mask |= 1u << 5;  ly = -32767; }
-                if (bound(12)) { mask |= 1u << 6;  lx = -32767; }
-                if (bound(13)) { mask |= 1u << 7;  lx = 32767; }
-
-                if (bound(0))  { mask |= 1u << 0; }
-                if (bound(2))  { mask |= 1u << 1; }
-                if (bound(1))  { mask |= 1u << 8; }
-                if (bound(3))  { mask |= 1u << 9; }
-
-                if (bound(4))  { mask |= 1u << 10; }
-                if (bound(5))  { mask |= 1u << 11; }
-                if (bound(6))  { mask |= 1u << 12; }
-                if (bound(7))  { mask |= 1u << 13; }
-
-                if (bound(8))  { mask |= 1u << 3; }
-                if (bound(9))  { mask |= 1u << 2; }
+                    else
+                    {
+                        pressed = evalFbneoBindings(it->second, this->keyboardState, nullptr, nullptr);
+                    }
+                    if (!pressed || profile.bits[row] < 0 || profile.bits[row] > 15)
+                    {
+                        continue;
+                    }
+                    const int bit = profile.bits[row];
+                    mask |= static_cast<uint16_t>(1u << bit);
+                    if (bit == 4)  { ly = 32767; }
+                    if (bit == 5)  { ly = -32767; }
+                    if (bit == 6)  { lx = -32767; }
+                    if (bit == 7)  { lx = 32767; }
+                }
             }
 
-            SDL_Gamepad* pad = psxPlayer.gamepad;
-            SDL_Joystick* joy = psxPlayer.joystick;
+            SDL_Gamepad* pad = playerState.gamepad;
+            SDL_Joystick* joy = playerState.joystick;
             if (pad == nullptr && player == 0)
             {
-                // Fall back to the first available gamepad so that bindings saved
-                // by the PlayStation Input dialog keep working even when the
-                // per-player device type is left as None/Keyboard.
-                if (this->psxGamepad == nullptr && this->psxJoystick == nullptr)
+                // Fall back to the first available gamepad so that saved
+                // bindings keep working even when the per-player device type
+                // is left as None/Keyboard.
+                if (padState.gamepad == nullptr && padState.joystick == nullptr)
                 {
                     SDL_PumpEvents();
                     SDL_UpdateJoysticks();
                     int count = 0;
                     SDL_JoystickID* ids = SDL_GetJoysticks(&count);
-                    for (int i = 0; i < count && this->psxGamepad == nullptr && this->psxJoystick == nullptr; i++)
+                    for (int i = 0; i < count &&
+                         padState.gamepad == nullptr && padState.joystick == nullptr; i++)
                     {
                         if (SDL_IsGamepad(ids[i]))
                         {
-                            this->psxGamepad = SDL_OpenGamepad(ids[i]);
+                            padState.gamepad = SDL_OpenGamepad(ids[i]);
                         }
                         else
                         {
-                            this->psxJoystick = SDL_OpenJoystick(ids[i]);
+                            padState.joystick = SDL_OpenJoystick(ids[i]);
                         }
                     }
                     if (ids != nullptr) SDL_free(ids);
                 }
-                if (this->psxGamepad != nullptr) pad = this->psxGamepad;
-                if (this->psxJoystick != nullptr && joy == nullptr) joy = this->psxJoystick;
+                if (padState.gamepad != nullptr) pad = padState.gamepad;
+                if (padState.joystick != nullptr && joy == nullptr) joy = padState.joystick;
             }
             if (joy == nullptr && pad != nullptr)
             {
@@ -2319,44 +2361,40 @@ private:
             }
             if (pad != nullptr || joy != nullptr)
             {
+                // Standard gamepad layout: these are raw libretro joypad bits,
+                // identical for every profile. The profile's names/bits table
+                // only affects the bindings saved by the dialog below.
                 if (pad != nullptr)
                 {
                     if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_SOUTH))         { mask |= 1u << 0; }
                     if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_WEST))          { mask |= 1u << 1; }
-                    if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_EAST))          { mask |= 1u << 8; }
-                    if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_NORTH))         { mask |= 1u << 9; }
-                    if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER)) { mask |= 1u << 10; }
-                    if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER)){ mask |= 1u << 11; }
                     if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_BACK))          { mask |= 1u << 2; }
                     if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_START))         { mask |= 1u << 3; }
-                    if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_LEFT_STICK))    { mask |= 1u << 14; }
-                    if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_RIGHT_STICK))   { mask |= 1u << 15; }
                     if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_DPAD_UP))       { mask |= 1u << 4; }
                     if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_DPAD_DOWN))     { mask |= 1u << 5; }
                     if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_DPAD_LEFT))     { mask |= 1u << 6; }
                     if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_DPAD_RIGHT))    { mask |= 1u << 7; }
+                    if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_EAST))          { mask |= 1u << 8; }
+                    if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_NORTH))         { mask |= 1u << 9; }
+                    if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER)) { mask |= 1u << 10; }
+                    if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER)){ mask |= 1u << 11; }
+                    if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_LEFT_STICK))    { mask |= 1u << 14; }
+                    if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_RIGHT_STICK))   { mask |= 1u << 15; }
                 }
 
                 // Supplementary: apply any remapped bindings saved by the
-                // PlayStation Input dialog (in addition to the standard layout).
+                // input dialog (in addition to the standard layout).
+                for (int row = 0; row < profile.count; row++)
                 {
-                    static const int psxBit[14] = { 0, 8, 1, 9, 10, 11, 12, 13, 3, 2, 4, 5, 6, 7 };
-                    static const char* psxNames[14] = {
-                        "PS1 Cross", "PS1 Circle", "PS1 Square", "PS1 Triangle",
-                        "PS1 L1", "PS1 R1", "PS1 L2", "PS1 R2",
-                        "PS1 Start", "PS1 Select",
-                        "PS1 D-Pad Up", "PS1 D-Pad Down", "PS1 D-Pad Left", "PS1 D-Pad Right",
-                    };
-                    for (int bi = 0; bi < 14; bi++)
+                    const auto it = padState.bindings.find(profile.names[row]);
+                    if (it == padState.bindings.end() || it->second.empty())
                     {
-                        auto it = this->psxBbindings.find(psxNames[bi]);
-                        if (it != this->psxBbindings.end() && !it->second.empty())
-                        {
-                            if (evalFbneoBindings(it->second, this->keyboardState, pad, joy))
-                            {
-                                mask |= 1u << psxBit[bi];
-                            }
-                        }
+                        continue;
+                    }
+                    if (evalFbneoBindings(it->second, this->keyboardState, pad, joy) &&
+                        profile.bits[row] >= 0 && profile.bits[row] <= 15)
+                    {
+                        mask |= static_cast<uint16_t>(1u << profile.bits[row]);
                     }
                 }
 
@@ -2391,13 +2429,13 @@ private:
             {
                 this->lastMask[player] = mask;
                 const std::string logPath =
-                    QCoreApplication::applicationDirPath().toStdString() + "/psx_input.log";
+                    QCoreApplication::applicationDirPath().toStdString() + "/" + profile.traceFile;
                 FILE* f = std::fopen(logPath.c_str(), "a");
                 if (f != nullptr)
                 {
                     std::fprintf(f, "P%d mask=0x%04x lx=%d ly=%d rx=%d ry=%d dev=%d pad=%p joy=%p\n",
                         player + 1, mask, (int)lx, (int)ly, (int)rx, (int)ry,
-                        (int)psxPlayer.device, (void*)pad, (void*)joy);
+                        (int)playerState.device, (void*)pad, (void*)joy);
                     std::fclose(f);
                 }
             }
@@ -2411,12 +2449,8 @@ private:
     int             m_openRetryTicks = 0;
     int             m_openAttempts   = 0;
     bool            keyboardState[SDL_SCANCODE_COUNT];
-    int             psxKeys[14];
-    std::unordered_map<std::string, std::vector<FbneoBinding>> psxBbindings;
-    SDL_Gamepad* psxGamepad = nullptr;
-    SDL_Joystick* psxJoystick = nullptr;
+    LibretroPadState libretroPads[4];
     FbneoArcadePlayer players[FBNEO_MAX_PLAYERS];
-    FbneoArcadePlayer psxPlayers[FBNEO_MAX_PLAYERS];
     uint32_t        lastMask[FBNEO_MAX_PLAYERS] = { 0, 0, 0, 0 };
 };
 
@@ -2434,11 +2468,11 @@ void FbneoInputReloadSettings(void)
     }
 }
 
-void FbneoPsxInputReloadSettings(void)
+void FbneoLibretroInputReloadSettings(int profileId)
 {
     if (s_FbneoInputHandler != nullptr)
     {
-        s_FbneoInputHandler->reloadPsxKeys();
+        s_FbneoInputHandler->reloadLibretroKeys(profileId);
     }
 }
 

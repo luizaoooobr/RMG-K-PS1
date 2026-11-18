@@ -16,7 +16,7 @@
 #include <RMG-Core/Settings.hpp>
 #include <RMG-Core/Emulation.hpp>
 
-extern void FbneoPsxInputReloadSettings(void);
+extern void FbneoLibretroInputReloadSettings(int profileId);
 #include "Utilities/QtKeyToSdl3Key.hpp"
 
 #include <SDL3/SDL.h>
@@ -26,22 +26,6 @@ namespace UserInterface
 {
 namespace Dialog
 {
-
-static const char* kSection = "RMG PS1 Input - Global";
-
-static const char* kButtonNames[14] = {
-    "PS1 Cross", "PS1 Circle", "PS1 Square", "PS1 Triangle",
-    "PS1 L1", "PS1 R1", "PS1 L2", "PS1 R2",
-    "PS1 Start", "PS1 Select",
-    "PS1 D-Pad Up", "PS1 D-Pad Down", "PS1 D-Pad Left", "PS1 D-Pad Right",
-};
-
-static const int kDefaultScancodes[14] = {
-    SDL_SCANCODE_Z, SDL_SCANCODE_X, SDL_SCANCODE_A, SDL_SCANCODE_S,
-    SDL_SCANCODE_Q, SDL_SCANCODE_W, SDL_SCANCODE_E, SDL_SCANCODE_R,
-    SDL_SCANCODE_RETURN, SDL_SCANCODE_RSHIFT,
-    SDL_SCANCODE_UP, SDL_SCANCODE_DOWN, SDL_SCANCODE_LEFT, SDL_SCANCODE_RIGHT,
-};
 
 enum BindingSource
 {
@@ -60,12 +44,15 @@ struct Binding
     int extra = 0;
 };
 
-PsxInputDialog::PsxInputDialog(QWidget* parent)
-    : QDialog(parent)
+PsxInputDialog::PsxInputDialog(LibretroInputProfileId profile, QWidget* parent)
+    : QDialog(parent),
+      m_profileId(profile),
+      m_profile(&libretroInputProfile(profile))
 {
-    setWindowTitle(tr("PlayStation Input"));
+    const int count = m_profile->count;
+    setWindowTitle(tr(m_profile->title));
     setModal(true);
-    resize(520, 480);
+    resize(520, profile == LibretroInputProfileId::Psx ? 480 : 560);
 
     auto* layout = new QVBoxLayout(this);
 
@@ -90,7 +77,8 @@ PsxInputDialog::PsxInputDialog(QWidget* parent)
 
     for (int p = 0; p < 4; p++)
     {
-        std::string section = "RMG PS1 Device - P" + std::to_string(p);
+        const std::string section =
+            std::string(m_profile->deviceSectionPrefix) + std::to_string(p);
         m_deviceType[p] = CoreSettingsGetIntValue(SettingsID::FBNeo_DeviceType, section);
     }
 
@@ -103,15 +91,15 @@ PsxInputDialog::PsxInputDialog(QWidget* parent)
     });
 
     // Table
-    m_table = new QTableWidget(14, 2, this);
+    m_table = new QTableWidget(count, 2, this);
     m_table->setHorizontalHeaderLabels({tr("Button"), tr("Binding")});
     m_table->horizontalHeader()->setStretchLastSection(true);
     m_table->verticalHeader()->setVisible(false);
     m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
-    for (int i = 0; i < 14; i++)
+    for (int i = 0; i < count; i++)
     {
-        m_table->setItem(i, 0, new QTableWidgetItem(QString::fromUtf8(kButtonNames[i])));
+        m_table->setItem(i, 0, new QTableWidgetItem(QString::fromUtf8(m_profile->names[i])));
         auto* btn = new QPushButton(tr("Bind"), this);
         btn->setFocusPolicy(Qt::NoFocus);
         connect(btn, &QPushButton::clicked, this, [this, i]() { this->startCapture(i); });
@@ -132,23 +120,24 @@ PsxInputDialog::PsxInputDialog(QWidget* parent)
     }
 
     m_names.clear();
-    for (int i = 0; i < 14; i++)
+    for (int i = 0; i < count; i++)
     {
-        m_names.push_back(QString::fromUtf8(kButtonNames[i]));
+        m_names.push_back(QString::fromUtf8(m_profile->names[i]));
     }
-    m_types.assign(14, Source_Keyboard);
-    m_data.assign(14, 0);
-    m_extra.assign(14, 0);
-    for (int i = 0; i < 14; i++)
+    m_types.assign(count, Source_Keyboard);
+    m_data.assign(count, 0);
+    m_extra.assign(count, 0);
+    for (int i = 0; i < count; i++)
     {
-        m_data[i] = kDefaultScancodes[i];
+        m_data[i] = m_profile->defaults[i];
     }
 
     // load existing
-    const std::vector<int> types = CoreSettingsGetIntListValue(SettingsID::FBNeo_BindingTypes, kSection);
-    const std::vector<int> data = CoreSettingsGetIntListValue(SettingsID::FBNeo_BindingData, kSection);
-    const std::vector<int> extra = CoreSettingsGetIntListValue(SettingsID::FBNeo_BindingExtraData, kSection);
-    const std::vector<std::string> names = CoreSettingsGetStringListValue(SettingsID::FBNeo_BindingNames, kSection);
+    const std::string section = m_profile->bindingSection;
+    const std::vector<int> types = CoreSettingsGetIntListValue(SettingsID::FBNeo_BindingTypes, section);
+    const std::vector<int> data = CoreSettingsGetIntListValue(SettingsID::FBNeo_BindingData, section);
+    const std::vector<int> extra = CoreSettingsGetIntListValue(SettingsID::FBNeo_BindingExtraData, section);
+    const std::vector<std::string> names = CoreSettingsGetStringListValue(SettingsID::FBNeo_BindingNames, section);
     if (names.size() == m_names.size() && types.size() == m_types.size() &&
         data.size() == m_data.size() && extra.size() == m_extra.size())
     {
@@ -206,25 +195,27 @@ void PsxInputDialog::saveBindings()
     std::vector<int> data(m_data.begin(), m_data.end());
     std::vector<int> extra(m_extra.begin(), m_extra.end());
 
-    CoreSettingsSetValue(SettingsID::FBNeo_BindingNames, kSection, names);
-    CoreSettingsSetValue(SettingsID::FBNeo_BindingTypes, kSection, types);
-    CoreSettingsSetValue(SettingsID::FBNeo_BindingData, kSection, data);
-    CoreSettingsSetValue(SettingsID::FBNeo_BindingExtraData, kSection, extra);
+    const std::string section = m_profile->bindingSection;
+    CoreSettingsSetValue(SettingsID::FBNeo_BindingNames, section, names);
+    CoreSettingsSetValue(SettingsID::FBNeo_BindingTypes, section, types);
+    CoreSettingsSetValue(SettingsID::FBNeo_BindingData, section, data);
+    CoreSettingsSetValue(SettingsID::FBNeo_BindingExtraData, section, extra);
 
     for (int p = 0; p < 4; p++)
     {
-        std::string section = "RMG PS1 Device - P" + std::to_string(p);
-        CoreSettingsSetValue(SettingsID::FBNeo_DeviceType, section, m_deviceType[p]);
+        const std::string deviceSection =
+            std::string(m_profile->deviceSectionPrefix) + std::to_string(p);
+        CoreSettingsSetValue(SettingsID::FBNeo_DeviceType, deviceSection, m_deviceType[p]);
     }
 
     CoreSettingsSave();
 
-    FbneoPsxInputReloadSettings();
+    FbneoLibretroInputReloadSettings(static_cast<int>(m_profileId));
 }
 
 void PsxInputDialog::refreshTable()
 {
-    for (int i = 0; i < 14; i++)
+    for (int i = 0; i < m_profile->count; i++)
     {
         auto* btn = qobject_cast<QPushButton*>(m_table->cellWidget(i, 1));
         if (btn != nullptr)

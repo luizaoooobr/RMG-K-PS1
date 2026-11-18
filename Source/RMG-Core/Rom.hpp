@@ -14,11 +14,22 @@
 
 enum class CoreRomType
 {
-    Cartridge = 0,
-    Disk      = 1,
-    Arcade    = 2,
-    PlayStation = 3
+    Cartridge  = 0,
+    Disk       = 1,
+    Arcade     = 2,
+    PlayStation = 3,
+    Dreamcast   = 4,
+    Naomi       = 5,
+    Atomiswave  = 6
 };
+
+// True for every machine driven by the bundled libretro runtime. They all use
+// the same 12-byte input packet and cannot be launched with another ROM/disk.
+inline bool CoreIsLibretroRomType(CoreRomType type)
+{
+    return type == CoreRomType::PlayStation || type == CoreRomType::Dreamcast ||
+           type == CoreRomType::Naomi || type == CoreRomType::Atomiswave;
+}
 
 // opens the given file as ROM
 bool CoreOpenRom(std::filesystem::path file);

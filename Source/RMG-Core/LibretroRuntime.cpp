@@ -99,6 +99,7 @@ int         g_players        = 2;
 int         g_inputSize      = libretro_rt::kInputBytesPerPlayer;
 int         g_inputPlayers   = 0;
 bool        g_netgameMode    = false;
+libretro_rt::System g_system = libretro_rt::System::Psx;
 // Only a session with remote peers needs the memory card removed: on one machine
 // both seats share the same card, so keeping it cannot cause a checksum split.
 bool        g_memoryCardDisabled = false;
@@ -973,7 +974,7 @@ namespace libretro_rt
 {
 
 bool Initialize(const char* corePath, const char* gamePath, const char* systemDir,
-                const char* saveDir, int players)
+                const char* saveDir, int players, System system)
 {
     std::lock_guard<std::mutex> lock(g_frameMutex);
 
@@ -990,6 +991,7 @@ bool Initialize(const char* corePath, const char* gamePath, const char* systemDi
 
     g_corePath    = corePath;
     g_gamePath    = gamePath;
+    g_system      = system;
     g_systemDir   = systemDir != nullptr ? systemDir : std::string();
     g_saveDir     = saveDir != nullptr ? saveDir : g_systemDir;
     g_players     = std::max(players, 1);
@@ -1012,12 +1014,15 @@ bool Initialize(const char* corePath, const char* gamePath, const char* systemDi
     g_localInput.assign(static_cast<size_t>(g_players) * static_cast<size_t>(g_inputSize), 0);
     g_appliedInput.assign(static_cast<size_t>(g_players) * static_cast<size_t>(g_inputSize), 0);
 
-    // Pin the machine-local parts of the core before it boots. SwanStation
-    // (DuckStation) defaults to a hardware renderer, which this embedding
-    // runtime never provides: the frame has to stay CPU-side so rollback can
-    // snapshot and replay it. Its worker threads would also make frame
-    // production depend on host timing. Overrides are ignored by cores that
-    // don't declare the key, so other libretro cores are unaffected.
+    // Pin the machine-local parts of the core before it boots. Overrides are
+    // ignored by cores that don't declare the key, so each family only reacts
+    // to its own options.
+    if (g_system == System::Psx)
+    {
+    // SwanStation (DuckStation) defaults to a hardware renderer, which this
+    // embedding runtime never provides: the frame has to stay CPU-side so
+    // rollback can snapshot and replay it. Its worker threads would also make
+    // frame production depend on host timing.
     SetOptionOverride("swanstation_GPU_Renderer", "Software");
     if (g_netgameMode)
     {
@@ -1059,6 +1064,41 @@ bool Initialize(const char* corePath, const char* gamePath, const char* systemDi
         // state on both peers. Offline and local play keep the normal card.
         SetOptionOverride("swanstation_MemoryCards_Card1Type", "None");
         SetOptionOverride("swanstation_MemoryCards_Card2Type", "None");
+    }
+    }
+    else
+    {
+        // parallel-dc: keep the machine identical on both peers. Its core
+        // options are auto-detected from the host in some cases (DIV matching,
+        // SH4 timing, ARM7 recompiler), so pin the deterministic choices.
+        // "auto" system detection is left alone: the core identifies NAOMI and
+        // Atomiswave from the romset contents, which is more reliable than the
+        // host guessing from a file name.
+        SetOptionOverride("reicast_gdrom_fast_loading", "disabled");
+        SetOptionOverride("reicast_frame_skipping", "disabled");
+        SetOptionOverride("reicast_div_matching", "disabled");
+        SetOptionOverride("reicast_sh4_timing", "legacy");
+        SetOptionOverride("reicast_allow_service_buttons", "enabled");
+        // VMUs are part of the serialized state. A synchronized session must
+        // not use the player's VMU files; Emulation.cpp points saveDir at an
+        // isolated per-session directory for the same reason.
+        SetOptionOverride("reicast_per_content_vmus", "disabled");
+        if (g_netgameMode || g_memoryCardDisabled)
+        {
+            SetOptionOverride("reicast_threaded_rendering", "disabled");
+            // The ARM7 interpreter is bit-identical across hosts; the
+            // recompiler's emitted code can differ between CPU families.
+            SetOptionOverride("reicast_arm7_recompiler", "disabled");
+        }
+    }
+
+    // The DC core declares JOYPAD subclasses (twinstick, ASCII stick). Forcing
+    // the base pad keeps every widget of the 12-byte packet addressable through
+    // the same RETRO_DEVICE_ID_JOYPAD_* bits the input dialog binds.
+    if (g_system != System::Psx)
+    {
+        g_portDevice         = RETRO_DEVICE_JOYPAD;
+        g_portDeviceExplicit = true;
     }
 
     g_lib = lib_open(corePath);
@@ -1227,8 +1267,35 @@ bool Reset()
     return true;
 }
 
-bool IsMediaFile(const char* path)
+// True when `hint` appears as a whole path component/word. "dc" inside a
+// filename like "luckydice.chd" must not route a PS1 disc to the DC core.
+static bool path_has_system_hint(const std::string& lower, const char* hint)
 {
+    const size_t hintLen = std::strlen(hint);
+    size_t pos = 0;
+    while ((pos = lower.find(hint, pos)) != std::string::npos)
+    {
+        const bool leftOk = pos == 0 || lower[pos - 1] == '/' || lower[pos - 1] == '\\' ||
+                            lower[pos - 1] == ' ' || lower[pos - 1] == '-' || lower[pos - 1] == '_';
+        const size_t end = pos + hintLen;
+        const bool rightOk = end == lower.size() || lower[end] == '/' || lower[end] == '\\' ||
+                             lower[end] == ' ' || lower[end] == '-' || lower[end] == '_' ||
+                             lower[end] == '.';
+        if (leftOk && rightOk)
+        {
+            return true;
+        }
+        pos = end;
+    }
+    return false;
+}
+
+bool IsMediaFile(const char* path, System* detected)
+{
+    if (detected != nullptr)
+    {
+        *detected = System::Psx;
+    }
     if (path == nullptr || path[0] == '\0')
     {
         return false;
@@ -1250,26 +1317,72 @@ bool IsMediaFile(const char* path)
     }
 
     const std::string ext = lower.substr(dot);
-    if (ext == ".cue" || ext == ".chd" || ext == ".pbp" || ext == ".m3u" ||
-        ext == ".ccd" || ext == ".mds" || ext == ".toc")
+    const bool naomiHint = path_has_system_hint(lower, "naomi") || path_has_system_hint(lower, "naomi2");
+    const bool atomHint  = path_has_system_hint(lower, "atomiswave") || path_has_system_hint(lower, "atom");
+    const bool dcHint    = path_has_system_hint(lower, "dreamcast") || path_has_system_hint(lower, "dc") ||
+                           naomiHint || atomHint;
+    const System hintedSystem = atomHint ? System::Atomiswave
+                              : (naomiHint ? System::Naomi : System::Dreamcast);
+
+    // Formats only parallel-dc understands.
+    if (ext == ".gdi" || ext == ".cdi" || ext == ".elf")
     {
+        if (detected != nullptr) *detected = System::Dreamcast;
+        return true;
+    }
+    if (ext == ".lst" || ext == ".dat")
+    {
+        if (detected != nullptr) *detected = atomHint ? System::Atomiswave : System::Naomi;
+        return true;
+    }
+
+    // Archives and bare NAOMI ROM binaries are shared with arcade consoles;
+    // FBNeo has already had first refusal, so only claim them when the path
+    // itself identifies a DC-family system.
+    if (ext == ".zip" || ext == ".7z" || ext == ".rar" || (ext == ".bin" && dcHint && !naomiHint && !atomHint))
+    {
+        if (!dcHint)
+        {
+            return false;
+        }
+        if (detected != nullptr) *detected = hintedSystem;
         return true;
     }
 
     // A bare .bin is only treated as a disc when a sibling .cue names it;
-    // otherwise every random binary file would route to the PS1 core.
+    // otherwise every random binary file would route to a libretro core.
     if (ext == ".bin")
     {
         std::string cue = lower.substr(0, dot) + ".cue";
         FILE* file = std::fopen(cue.c_str(), "rb");
         if (file != nullptr)
         {
+            if (detected != nullptr) *detected = dcHint ? hintedSystem : System::Psx;
             std::fclose(file);
             return true;
         }
+        return false;
+    }
+
+    if (ext == ".cue" || ext == ".chd" || ext == ".m3u" ||
+        ext == ".ccd" || ext == ".mds" || ext == ".toc")
+    {
+        if (detected != nullptr) *detected = dcHint ? hintedSystem : System::Psx;
+        return true;
+    }
+
+    // PS1-only disc formats.
+    if (ext == ".pbp")
+    {
+        return true;
     }
 
     return false;
+}
+
+System CurrentSystem()
+{
+    return g_system;
 }
 
 const char* CoreName()

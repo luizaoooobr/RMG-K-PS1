@@ -228,10 +228,22 @@ jobs:
           # Find and move Linux AppImage
           find artifacts -name "*.AppImage" -exec cp {} release/ \;
 
-          # Zip Windows portable build
+          # Zip Windows portable build. Machine-local state and user content must
+          # never ship in a release: Config/Cache hold per-user settings, roms and
+          # saves are copyrighted/user data, and logs/dumps are debug noise.
           if [ -d "artifacts/RMG-K-Portable-Windows64-${{ env.VERSION }}" ]; then
             cd "artifacts/RMG-K-Portable-Windows64-${{ env.VERSION }}"
-            zip -r "../../release/RMG-K-Portable-Windows64-${{ env.VERSION }}.zip" .
+            zip -r "../../release/RMG-K-Portable-Windows64-${{ env.VERSION }}.zip" . \
+              -x "Config" "Config/*" "*/Config/*" \
+                 "Cache" "Cache/*" "*/Cache/*" \
+                 "roms" "roms/*" "*/roms/*" \
+                 "roms - Copia" "roms - Copia/*" "*/roms - Copia/*" \
+                 "Save" "Save/*" "*/Save/*" \
+                 "Screenshots" "Screenshots/*" "*/Screenshots/*" \
+                 "Logs" "Logs/*" "*/Logs/*" \
+                 "records" "records/*" "*/records/*" \
+                 "*.zip" "*.dmp" "*.log" \
+                 "RMG-K-old.exe"
             cd ../..
           fi
 
