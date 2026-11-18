@@ -108,14 +108,31 @@ unsigned int g_GekkoStateCapacity = kFbneoStateCapacityBytes;
 // experiments; FBNeo and Mupen never used it: their states are small (283 KB /
 // 8.4 MB), per-frame saves keep desync detection on, and the FBNeo sound chips
 // are re-rendered across a long rewind, which shows up as repeated audio.
-// Local Dreamcast/NAOMI/Atomiswave sessions opt into limited saving directly
-// in start_local_session(), because their ~11 MB states are far more expensive
-// than SwanStation's ~4.3 MB written prefix.
+// Dreamcast/NAOMI/Atomiswave sessions use limited saving in every mode, not
+// just locally: parallel-dc reports a ~61.5 MB serialized state, and saving plus
+// hashing it costs about 20 ms per frame in the released build. At 60 fps that
+// leaves no room for emulation, and the game dropped to the mid-40s online
+// exactly as it did offline before the local-only fix.
+//
+// GekkoNet's limited mode is still deterministic: it saves the rollback anchor
+// once per prediction window (or when a confirmed frame arrives), and every
+// rollback restores that anchor and resimulates the remaining frames. What it
+// gives up is per-frame checksum desync detection, which cannot exist for frames
+// that were never saved. PS1 keeps the per-frame cadence because SwanStation
+// only writes ~4.3 MB of its 11 MB state; FBNeo and Mupen states are small and
+// keep desync detection as before. Dreamcast-class states are ~61.5 MB, so the
+// anchor cadence is the only way to keep them near 60 fps without rewriting the
+// core's serializer.
 bool limited_saving_for_runtime()
 {
     if (CoreRollbackGetCore() != CoreRollbackCore::Libretro)
     {
         return false;
+    }
+
+    if (CoreGetLibretroSystem() != CoreLibretroSystem::Psx)
+    {
+        return true;
     }
 
     const char* env = std::getenv("RMGK_PS1_LIMITED_SAVING");
@@ -1757,7 +1774,7 @@ void write_state_area_dump(const unsigned char* state, int len, int frame, int i
         // A libretro core serializes one opaque blob with no block table. Emit a
         // coarse hash table over the bytes the core actually wrote instead: two
         // peers' logs can then be diffed to the block where they diverged
-        // without shipping 11 MB binaries around.
+        // without shipping the full state dumps around.
         constexpr int kStateBlockBytes = 64 * 1024;
         int written = len;
         while (written > 0 && state[written - 1] == 0)
@@ -3357,9 +3374,11 @@ bool rmgk_gekko::start_p2p_session(const char* gameName, int players, int inputS
     config.input_prediction_window = static_cast<unsigned char>(clampedPredictionWindow);
     config.input_size = static_cast<unsigned int>(inputSize);
     config.state_size = g_GekkoStateCapacity;
-    // Per-runtime save cadence; see limited_saving_for_runtime(). Desync
-    // detection is still requested everywhere, but GekkoNet disables it on its
-    // own in limited mode because unsaved frames have no checksum to compare.
+    // Per-runtime save cadence; see limited_saving_for_runtime(). Dreamcast/
+    // NAOMI/Atomiswave now use limited saving here too: the old per-frame
+    // cadence cost ~20 ms with a ~61.5 MB state and caused the reported FPS drop.
+    // Desync detection is still requested, but GekkoNet disables it on its own
+    // in limited mode because unsaved frames have no checksum to compare.
     config.limited_saving = limited_saving_for_runtime();
     config.desync_detection = true;
     config.check_distance = 10;
@@ -3618,9 +3637,10 @@ bool rmgk_gekko::start_lobby_session(const char* gameName, int players, int inpu
     config.input_prediction_window = static_cast<unsigned char>(clampedPredictionWindow);
     config.input_size = static_cast<unsigned int>(inputSize);
     config.state_size = g_GekkoStateCapacity;
-    // Per-runtime save cadence; see limited_saving_for_runtime(). Desync
-    // detection is still requested everywhere, but GekkoNet disables it on its
-    // own in limited mode because unsaved frames have no checksum to compare.
+    // Per-runtime save cadence; see limited_saving_for_runtime(). Lobby matches
+    // are real netplay sessions, so they get the same limited-saving policy as
+    // direct P2P for the ~61.5 MB Dreamcast-class states. Desync detection is
+    // still requested, but GekkoNet disables it on its own in limited mode.
     config.limited_saving = limited_saving_for_runtime();
     config.desync_detection = true;
     config.check_distance = 10;
@@ -3862,16 +3882,11 @@ bool rmgk_gekko::start_local_session(const char* gameName, int players, int inpu
     config.input_prediction_window = static_cast<unsigned char>(predictionWindow);
     config.input_size = static_cast<unsigned int>(inputSize);
     config.state_size = g_GekkoStateCapacity;
-    // Per-runtime save cadence; see limited_saving_for_runtime(). Desync
-    // detection is still requested everywhere, but GekkoNet disables it on its
-    // own in limited mode because unsaved frames have no checksum to compare.
-    // A local Dreamcast/NAOMI/Atomiswave session has no peer to resimulate for.
-    // A parallel-dc state is ~11 MB; saving and hashing it every frame cost
-    // ~15 ms and capped the game at ~41 fps. Save once per prediction window
-    // instead. Netplay keeps the per-frame cadence and desync detection.
-    config.limited_saving = limited_saving_for_runtime() ||
-        (CoreRollbackGetCore() == CoreRollbackCore::Libretro &&
-         CoreGetLibretroSystem() != CoreLibretroSystem::Psx);
+    // Per-runtime save cadence; see limited_saving_for_runtime(). A parallel-dc
+    // state is ~61.5 MB; saving and hashing it every frame cost ~20 ms and
+    // capped the game in the 40s. Limited saving is now used in netplay as well,
+    // so keep the single policy here instead of special-casing local sessions.
+    config.limited_saving = limited_saving_for_runtime();
     config.desync_detection = true;
     config.check_distance = 10;
     gekko_start(g_GekkoSession, &config);
