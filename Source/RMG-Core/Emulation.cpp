@@ -1314,6 +1314,16 @@ void CoreSetFbneoFrameCallback(CoreFbneoFrameCallback callback, void* user)
         reinterpret_cast<libretro_rt::FrameCallback>(callback), user);
 }
 
+void CoreLibretroSetGlHooks(void* (*getProc)(const char* name), uint32_t (*getDefaultFb)())
+{
+    libretro_rt::SetGlHooks(getProc, getDefaultFb);
+}
+
+void CoreLibretroResolveHwFrame(void)
+{
+    libretro_rt::ResolveHwFrame();
+}
+
 bool CoreIsLibretroSessionActive(void)
 {
     return s_LibretroSessionActive;

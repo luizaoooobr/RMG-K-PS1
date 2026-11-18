@@ -41,6 +41,13 @@ typedef void (*CoreFbneoStopCallback)(void* user);
 void CoreSetFbneoFrameCallback(CoreFbneoFrameCallback callback, void* user);
 void CoreSetFbneoStopCallback(CoreFbneoStopCallback callback, void* user);
 
+// The frontend supplies GL function resolution from its output widget's current
+// context, and calls CoreLibretroResolveHwFrame() once per hardware-rendered
+// frame while that context is current. Only cores with no software renderer
+// (parallel-dc) use this; it leaves the CPU-frame path of SwanStation untouched.
+void CoreLibretroSetGlHooks(void* (*getProc)(const char* name), uint32_t (*getDefaultFb)());
+void CoreLibretroResolveHwFrame(void);
+
 // libretro session queries/input. CoreIsLibretroSessionActive() reports whether
 // the current session is driven by a libretro core (PlayStation, Dreamcast,
 // NAOMI or Atomiswave). All of them share the same 12-byte-per-player input

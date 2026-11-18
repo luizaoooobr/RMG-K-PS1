@@ -12,6 +12,7 @@
 #include <RMG-Core/Callback.hpp>
 #include <RMG-Core/Directories.hpp>
 #include <RMG-Core/Emulation.hpp>
+#include <RMG-Core/LibretroRuntime.hpp>
 #include <RMG-Core/Kaillera.hpp>
 #include <RMG-Core/Netplay.hpp>
 #include <RMG-Core/Settings.hpp>
@@ -828,6 +829,13 @@ static m64p_function VidExt_GLGetProc(const char *Proc)
 #endif
 
     return (*l_OGLWidget)->GetContext()->getProcAddress(Proc);
+}
+
+// Adapts the m64p VidExt function resolver to the plain void* hook the libretro
+// runtime uses (same underlying resolved GL symbol, different typedef).
+static void* LibretroGlGetProc(const char* proc)
+{
+    return reinterpret_cast<void*>(VidExt_GLGetProc(proc));
 }
 
 static m64p_error VidExt_GLSetAttr(m64p_GLattr Attr, int Value)
@@ -2799,6 +2807,23 @@ static void RMG_FbneoVideoPresent(const void* video, int width, int height, int 
         return;
     }
 
+    // A hardware-rendering libretro core hands back a sentinel instead of
+    // pixels; resolve it into the ordinary CPU frame while the output context
+    // is current (this also performs the one-time context_reset). Re-read the
+    // frame afterwards so the upload below sees the freshly read-back pixels.
+    if (CoreIsLibretroSessionActive())
+    {
+        CoreLibretroResolveHwFrame();
+        const auto& frame = libretro_rt::GetVideoFrame();
+        if (frame.pixels != nullptr && frame.width > 0 && frame.height > 0)
+        {
+            video  = frame.pixels;
+            width  = static_cast<int>(frame.width);
+            height = static_cast<int>(frame.height);
+            pitch  = static_cast<int>(frame.pitch);
+        }
+    }
+
     // Refresh the target aspect once per emulation (the presenter is torn down
     // between games), so changing the video plugin's aspect ratio takes effect on
     // the next launch.
@@ -3305,6 +3330,11 @@ bool SetupVidExt(Thread::EmulationThread* emuThread, UserInterface::MainWindow* 
     // extension; register our presenter to blit its frames into the same OGL widget.
     CoreSetFbneoFrameCallback(&RMG_FbneoVideoPresent, nullptr);
     CoreSetFbneoStopCallback(&RMG_FbneoVideoStop, nullptr);
+
+    // Hardware-rendering libretro cores (parallel-dc has no software renderer)
+    // resolve their GL functions and read the frame back through these hooks.
+    // They are called on the emulation thread while the widget's context is current.
+    CoreLibretroSetGlHooks(&LibretroGlGetProc, &VidExt_GLGetDefaultFramebuffer);
 
 #ifdef _WIN32
     // Optional present phase lock: give the core pacer access to the

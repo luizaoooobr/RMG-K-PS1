@@ -177,6 +177,21 @@ namespace libretro_rt
 
     void SetFrameCallback(FrameCallback callback, void* user);
 
+    // Hooks the frontend supplies so hardware-rendering cores (parallel-dc,
+    // which has no software renderer) can resolve GL functions and read back
+    // the frame the core drew. Both are called on the emulation thread while
+    // the output widget's OpenGL context is current. Must be set before
+    // Initialize(). Cores that render to a plain framebuffer ignore these.
+    typedef void* (*GlGetProcFn)(const char* name);
+    typedef uint32_t (*GlGetDefaultFramebufferFn)();
+    void SetGlHooks(GlGetProcFn getProc, GlGetDefaultFramebufferFn getDefaultFb);
+
+    // Called by the frontend presenter once its OpenGL context is current.
+    // Turns the core's hardware frame (RETRO_HW_FRAME_BUFFER_VALID) into the
+    // ordinary CPU frame in GetVideoFrame(), calling context_reset() on the
+    // first use. Safe to call when no hardware frame is pending.
+    void ResolveHwFrame();
+
     void GetRunFrameStats(m64p_rollback_run_frame_stats& out);
 
     // Core option override, "key=value". Only applied when the loaded core

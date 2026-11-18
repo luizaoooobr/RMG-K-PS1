@@ -134,6 +134,69 @@ std::vector<uint32_t>     g_videoBuffer;
 int g_geometryWidth  = 0;
 int g_geometryHeight = 0;
 
+// Hardware-rendering cores (parallel-dc has no software renderer) draw into an
+// FBO the frontend supplies and hand the frame back as
+// RETRO_HW_FRAME_BUFFER_VALID. The frontend's GL hooks resolve the functions and
+// own the output context; we keep the FBO/texture here and read the pixels back
+// into the ordinary g_videoBuffer so the existing software-frame presenter and
+// the deterministic rollback path are unchanged.
+struct HwRenderState
+{
+    bool                     active       = false;
+    bool                     resetDone    = false;
+    bool                     framePending = false;
+    int                      width        = 0;
+    int                      height       = 0;
+    uint32_t                 framebuffer  = 0;
+    uint32_t                 texture      = 0;
+    retro_hw_render_callback callbacks    = {};
+};
+HwRenderState g_hw;
+
+// Kept outside HwRenderState: the frontend registers them once at startup, but
+// g_hw is cleared between games. Storing them here avoids losing the hooks on
+// the second launch.
+libretro_rt::GlGetProcFn              g_hwGetProc      = nullptr;
+libretro_rt::GlGetDefaultFramebufferFn g_hwGetDefaultFb = nullptr;
+
+// GL entry points we need for the FBO readback, resolved through the frontend
+// hook (which in turn uses the current QOpenGLContext). No GL headers required.
+typedef void          (*GlGenFramebuffersFn)(int, uint32_t*);
+typedef void          (*GlBindFramebufferFn)(unsigned, uint32_t);
+typedef void          (*GlGenTexturesFn)(int, uint32_t*);
+typedef void          (*GlBindTextureFn)(unsigned, uint32_t);
+typedef void          (*GlTexImage2DFn)(unsigned, int, int, int, int, int, unsigned, unsigned, const void*);
+typedef void          (*GlTexParameteriFn)(unsigned, unsigned, int);
+typedef void          (*GlFramebufferTexture2DFn)(unsigned, unsigned, unsigned, uint32_t, int);
+typedef unsigned      (*GlCheckFramebufferStatusFn)(unsigned);
+typedef void          (*GlReadPixelsFn)(int, int, int, int, unsigned, unsigned, void*);
+typedef void          (*GlViewportFn)(int, int, int, int);
+typedef void          (*GlDeleteFramebuffersFn)(int, const uint32_t*);
+typedef void          (*GlDeleteTexturesFn)(int, const uint32_t*);
+
+static GlGenFramebuffersFn       p_glGenFramebuffers       = nullptr;
+static GlBindFramebufferFn       p_glBindFramebuffer       = nullptr;
+static GlGenTexturesFn           p_glGenTextures           = nullptr;
+static GlBindTextureFn           p_glBindTexture           = nullptr;
+static GlTexImage2DFn            p_glTexImage2D            = nullptr;
+static GlTexParameteriFn         p_glTexParameteri         = nullptr;
+static GlFramebufferTexture2DFn  p_glFramebufferTexture2D  = nullptr;
+static GlCheckFramebufferStatusFn p_glCheckFramebufferStatus = nullptr;
+static GlReadPixelsFn            p_glReadPixels            = nullptr;
+static GlViewportFn              p_glViewport              = nullptr;
+static GlDeleteFramebuffersFn    p_glDeleteFramebuffers    = nullptr;
+static GlDeleteTexturesFn        p_glDeleteTextures        = nullptr;
+
+static const unsigned kGlTexture2D          = 0x0DE1;
+static const unsigned kGlRgba               = 0x1908;
+static const unsigned kGlUnsignedByte       = 0x1401;
+static const unsigned kGlTextureMinFilter   = 0x2801;
+static const unsigned kGlTextureMagFilter   = 0x2800;
+static const unsigned kGlLinear             = 0x2601;
+static const unsigned kGlFramebuffer        = 0x8D40;
+static const unsigned kGlColorAttachment0   = 0x8CE0;
+static const unsigned kGlFramebufferComplete = 0x8CD5;
+
 // Audio: cores may call audio_sample_batch several times per frame.
 std::vector<int16_t> g_audio;
 
@@ -234,6 +297,16 @@ void store_core_option(const char* key, const char* value)
 
 static void cb_video_refresh(const void* data, unsigned width, unsigned height, size_t pitch)
 {
+    // Hardware-rendering cores pass a sentinel instead of pixels: the picture is
+    // in the FBO we handed them. Defer the readback until the frontend calls
+    // ResolveHwFrame(), which runs with the GL context current.
+    if (data == RETRO_HW_FRAME_BUFFER_VALID)
+    {
+        g_hw.framePending = true;
+        g_hw.width        = static_cast<int>(width);
+        g_hw.height       = static_cast<int>(height);
+        return;
+    }
     if (data == nullptr)
     {
         // Duplicate frame: keep the previous buffer.
@@ -424,10 +497,47 @@ static void cb_log(enum retro_log_level level, const char* fmt, ...)
     std::fflush(stderr);
 }
 
+// Frontend GL hook adapters. The frontend's hook resolves through the current
+// QOpenGLContext; we cast to plain function pointers because the libretro header
+// is intentionally not exposed to the GUI layer.
+static retro_proc_address_t cb_hw_get_proc_address(const char* name)
+{
+    if (g_hwGetProc == nullptr || name == nullptr)
+    {
+        return nullptr;
+    }
+    return reinterpret_cast<retro_proc_address_t>(g_hwGetProc(name));
+}
+
+static uintptr_t cb_hw_get_current_framebuffer(void)
+{
+    return static_cast<uintptr_t>(g_hw.framebuffer);
+}
+
 static bool cb_environment(unsigned cmd, void* data)
 {
     switch (cmd)
     {
+        case RETRO_ENVIRONMENT_GET_PREFERRED_HW_RENDER:
+            if (data != nullptr)
+            {
+                *static_cast<unsigned*>(data) = RETRO_HW_CONTEXT_OPENGL_CORE;
+                return true;
+            }
+            return false;
+
+        case RETRO_ENVIRONMENT_SET_HW_RENDER:
+            if (data == nullptr)
+            {
+                return false;
+            }
+            g_hw.callbacks = *static_cast<const retro_hw_render_callback*>(data);
+            g_hw.active    = true;
+            g_hw.callbacks.get_current_framebuffer = cb_hw_get_current_framebuffer;
+            g_hw.callbacks.get_proc_address        = cb_hw_get_proc_address;
+            *static_cast<retro_hw_render_callback*>(data) = g_hw.callbacks;
+            return true;
+
         case RETRO_ENVIRONMENT_GET_CAN_DUPE:
             if (data != nullptr)
             {
@@ -962,6 +1072,15 @@ void shutdown_unlocked()
     g_audio.clear();
     g_videoBuffer.clear();
     g_videoFrame = libretro_rt::VideoFrame();
+    if (g_hw.framebuffer != 0 && p_glDeleteFramebuffers != nullptr)
+    {
+        p_glDeleteFramebuffers(1, &g_hw.framebuffer);
+    }
+    if (g_hw.texture != 0 && p_glDeleteTextures != nullptr)
+    {
+        p_glDeleteTextures(1, &g_hw.texture);
+    }
+    g_hw = HwRenderState();
     g_localInput.clear();
     g_appliedInput.clear();
     g_coreOptions.clear();
@@ -1003,6 +1122,7 @@ bool Initialize(const char* corePath, const char* gamePath, const char* systemDi
     g_pixelFormat = RETRO_PIXEL_FORMAT_0RGB1555;
     g_videoFrame  = VideoFrame();
     g_videoBuffer.clear();
+    g_hw          = HwRenderState();
     g_geometryWidth  = 0;
     g_geometryHeight = 0;
     g_stats = {};
@@ -1747,6 +1867,132 @@ void SetFrameCallback(FrameCallback callback, void* user)
 {
     g_presentCallback = callback;
     g_presentUser     = user;
+}
+
+void SetGlHooks(GlGetProcFn getProc, GlGetDefaultFramebufferFn getDefaultFb)
+{
+    g_hwGetProc      = getProc;
+    g_hwGetDefaultFb = getDefaultFb;
+}
+
+static bool hw_resolve_procs()
+{
+    if (g_hwGetProc == nullptr)
+    {
+        return false;
+    }
+    auto resolve = [](const char* name) -> void*
+    {
+        return reinterpret_cast<void*>(g_hwGetProc(name));
+    };
+    p_glGenFramebuffers        = reinterpret_cast<GlGenFramebuffersFn>(resolve("glGenFramebuffers"));
+    p_glBindFramebuffer        = reinterpret_cast<GlBindFramebufferFn>(resolve("glBindFramebuffer"));
+    p_glGenTextures            = reinterpret_cast<GlGenTexturesFn>(resolve("glGenTextures"));
+    p_glBindTexture            = reinterpret_cast<GlBindTextureFn>(resolve("glBindTexture"));
+    p_glTexImage2D             = reinterpret_cast<GlTexImage2DFn>(resolve("glTexImage2D"));
+    p_glTexParameteri          = reinterpret_cast<GlTexParameteriFn>(resolve("glTexParameteri"));
+    p_glFramebufferTexture2D   = reinterpret_cast<GlFramebufferTexture2DFn>(resolve("glFramebufferTexture2D"));
+    p_glCheckFramebufferStatus = reinterpret_cast<GlCheckFramebufferStatusFn>(resolve("glCheckFramebufferStatus"));
+    p_glReadPixels             = reinterpret_cast<GlReadPixelsFn>(resolve("glReadPixels"));
+    p_glViewport               = reinterpret_cast<GlViewportFn>(resolve("glViewport"));
+    p_glDeleteFramebuffers     = reinterpret_cast<GlDeleteFramebuffersFn>(resolve("glDeleteFramebuffers"));
+    p_glDeleteTextures         = reinterpret_cast<GlDeleteTexturesFn>(resolve("glDeleteTextures"));
+    return p_glGenFramebuffers != nullptr && p_glBindFramebuffer != nullptr &&
+           p_glGenTextures != nullptr && p_glTexImage2D != nullptr &&
+           p_glFramebufferTexture2D != nullptr && p_glReadPixels != nullptr;
+}
+
+void ResolveHwFrame()
+{
+    if (!g_hw.active || !g_hw.framePending)
+    {
+        return;
+    }
+    g_hw.framePending = false;
+
+    if (!hw_resolve_procs())
+    {
+        libretro_log("libretro HW frame: frontend did not supply usable GL function pointers");
+        return;
+    }
+
+    const int w = g_hw.width > 0 ? g_hw.width : g_geometryWidth;
+    const int h = g_hw.height > 0 ? g_hw.height : g_geometryHeight;
+    if (w <= 0 || h <= 0)
+    {
+        return;
+    }
+
+    if (g_hw.framebuffer == 0 || g_hw.texture == 0 || w != g_videoFrame.width || h != g_videoFrame.height)
+    {
+        if (g_hw.framebuffer != 0)
+        {
+            p_glDeleteFramebuffers(1, &g_hw.framebuffer);
+            g_hw.framebuffer = 0;
+        }
+        if (g_hw.texture != 0)
+        {
+            p_glDeleteTextures(1, &g_hw.texture);
+            g_hw.texture = 0;
+        }
+        p_glGenTextures(1, &g_hw.texture);
+        p_glBindTexture(kGlTexture2D, g_hw.texture);
+        p_glTexParameteri(kGlTexture2D, kGlTextureMinFilter, static_cast<int>(kGlLinear));
+        p_glTexParameteri(kGlTexture2D, kGlTextureMagFilter, static_cast<int>(kGlLinear));
+        p_glTexImage2D(kGlTexture2D, 0, static_cast<int>(kGlRgba), w, h, 0,
+                       kGlRgba, kGlUnsignedByte, nullptr);
+        p_glGenFramebuffers(1, &g_hw.framebuffer);
+        p_glBindFramebuffer(kGlFramebuffer, g_hw.framebuffer);
+        p_glFramebufferTexture2D(kGlFramebuffer, kGlColorAttachment0, kGlTexture2D, g_hw.texture, 0);
+        p_glBindFramebuffer(kGlFramebuffer, 0);
+
+        g_videoBuffer.assign(static_cast<size_t>(w) * static_cast<size_t>(h), 0u);
+        g_videoFrame.width  = w;
+        g_videoFrame.height = h;
+        g_videoFrame.pitch  = w * 4;
+        g_videoFrame.bpp    = 4;
+        g_videoFrame.pixels = reinterpret_cast<const uint8_t*>(g_videoBuffer.data());
+    }
+
+    if (!g_hw.resetDone && g_hw.callbacks.context_reset != nullptr)
+    {
+        g_hw.callbacks.context_reset();
+        g_hw.resetDone = true;
+    }
+
+    p_glBindFramebuffer(kGlFramebuffer, g_hw.framebuffer);
+    if (p_glCheckFramebufferStatus != nullptr &&
+        p_glCheckFramebufferStatus(kGlFramebuffer) != kGlFramebufferComplete)
+    {
+        libretro_log("libretro HW frame: incomplete framebuffer");
+        p_glBindFramebuffer(kGlFramebuffer, 0);
+        return;
+    }
+    p_glViewport(0, 0, w, h);
+    // GL's first row is the bottom; the presenter expects top-down rows.
+    std::vector<uint8_t> readback(static_cast<size_t>(w) * static_cast<size_t>(h) * 4);
+    p_glReadPixels(0, 0, w, h, kGlRgba, kGlUnsignedByte, readback.data());
+    p_glBindFramebuffer(kGlFramebuffer, 0);
+
+    // glReadPixels gives RGBA; g_videoBuffer holds 0x00RRGGBB so its bytes are
+    // BGRA, exactly what the GL_BGRA upload in the presenter expects. Flip Y
+    // and swap R/B in one pass.
+    uint32_t* dst = g_videoBuffer.data();
+    for (int y = 0; y < h; y++)
+    {
+        const uint8_t* src = readback.data() +
+            static_cast<size_t>(h - 1 - y) * static_cast<size_t>(w) * 4;
+        uint32_t* row = dst + static_cast<size_t>(y) * static_cast<size_t>(w);
+        for (int x = 0; x < w; x++)
+        {
+            const uint8_t* p = src + static_cast<size_t>(x) * 4;
+            row[x] = (static_cast<uint32_t>(p[3]) << 24) |
+                     (static_cast<uint32_t>(p[0]) << 16) |
+                     (static_cast<uint32_t>(p[1]) << 8) |
+                     static_cast<uint32_t>(p[2]);
+        }
+    }
+    g_videoFrame.pixels = reinterpret_cast<const uint8_t*>(g_videoBuffer.data());
 }
 
 void GetRunFrameStats(m64p_rollback_run_frame_stats& out)
