@@ -24,6 +24,7 @@
 #include "rmgk_gekko.hpp"
 
 #include "Directories.hpp"
+#include "Emulation.hpp"
 #include "Error.hpp"
 #include "Kaillera.hpp"
 #include "Library.hpp"
@@ -107,6 +108,9 @@ unsigned int g_GekkoStateCapacity = kFbneoStateCapacityBytes;
 // experiments; FBNeo and Mupen never used it: their states are small (283 KB /
 // 8.4 MB), per-frame saves keep desync detection on, and the FBNeo sound chips
 // are re-rendered across a long rewind, which shows up as repeated audio.
+// Local Dreamcast/NAOMI/Atomiswave sessions opt into limited saving directly
+// in start_local_session(), because their ~11 MB states are far more expensive
+// than SwanStation's ~4.3 MB written prefix.
 bool limited_saving_for_runtime()
 {
     if (CoreRollbackGetCore() != CoreRollbackCore::Libretro)
@@ -3861,7 +3865,13 @@ bool rmgk_gekko::start_local_session(const char* gameName, int players, int inpu
     // Per-runtime save cadence; see limited_saving_for_runtime(). Desync
     // detection is still requested everywhere, but GekkoNet disables it on its
     // own in limited mode because unsaved frames have no checksum to compare.
-    config.limited_saving = limited_saving_for_runtime();
+    // A local Dreamcast/NAOMI/Atomiswave session has no peer to resimulate for.
+    // A parallel-dc state is ~11 MB; saving and hashing it every frame cost
+    // ~15 ms and capped the game at ~41 fps. Save once per prediction window
+    // instead. Netplay keeps the per-frame cadence and desync detection.
+    config.limited_saving = limited_saving_for_runtime() ||
+        (CoreRollbackGetCore() == CoreRollbackCore::Libretro &&
+         CoreGetLibretroSystem() != CoreLibretroSystem::Psx);
     config.desync_detection = true;
     config.check_distance = 10;
     gekko_start(g_GekkoSession, &config);
