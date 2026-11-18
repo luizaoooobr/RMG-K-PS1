@@ -51,7 +51,6 @@ enum class SettingsID
     GUI_Language,
     GUI_CheckForUpdates,
     GUI_LastUpdateCheck,
-    GUI_LastUpdateSeen,
     GUI_ConfirmExitWhileInGame,
     GUI_PreferredInputPlugin,
     GUI_Version,
@@ -616,6 +615,10 @@ enum class SettingsID
     // Phase-lock the visible frame to the display refresh (lower input lag).
     // Appended here for the same ABI reason as the keybindings above.
     Rollback_PresentPhaseAlign,
+
+    // Updater release fingerprint (updated_at of our release), stored so the
+    // GUI can tell two republishes of the moving vdev-9999 tag apart.
+    GUI_LastUpdateSeen,
 
     Invalid
 };
