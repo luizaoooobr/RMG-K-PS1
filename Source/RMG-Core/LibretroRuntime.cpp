@@ -203,6 +203,7 @@ std::vector<int16_t> g_audio;
 double g_fps = 60.0;
 
 m64p_rollback_run_frame_stats g_stats = {};
+unsigned int g_frameChecksum = 0;
 
 // Core options: defaults captured from the core's declarations plus any
 // explicit overrides. A missing key answers false, letting the core use its own
@@ -1761,6 +1762,9 @@ bool RunFrame(int flags)
     g_stats = {};
     g_stats.total_us = static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::microseconds>(clock_::now() - begin).count());
+    g_frameChecksum = fnv1a64_lanes(
+        reinterpret_cast<const unsigned char*>(g_audio.data()),
+        g_audio.size() * sizeof(int16_t));
 
     if (g_shutdownFlag)
     {
@@ -2008,6 +2012,11 @@ void ResolveHwFrame()
 void GetRunFrameStats(m64p_rollback_run_frame_stats& out)
 {
     out = g_stats;
+}
+
+unsigned int GetFrameChecksum()
+{
+    return g_frameChecksum;
 }
 
 void SetOptionOverride(const char* key, const char* value)

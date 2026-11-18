@@ -108,21 +108,15 @@ unsigned int g_GekkoStateCapacity = kFbneoStateCapacityBytes;
 // experiments; FBNeo and Mupen never used it: their states are small (283 KB /
 // 8.4 MB), per-frame saves keep desync detection on, and the FBNeo sound chips
 // are re-rendered across a long rewind, which shows up as repeated audio.
-// Dreamcast/NAOMI/Atomiswave sessions use limited saving in every mode, not
-// just locally: parallel-dc reports a ~61.5 MB serialized state, and saving plus
-// hashing it costs about 20 ms per frame in the released build. At 60 fps that
-// leaves no room for emulation, and the game dropped to the mid-40s online
-// exactly as it did offline before the local-only fix.
-//
-// GekkoNet's limited mode is still deterministic: it saves the rollback anchor
-// once per prediction window (or when a confirmed frame arrives), and every
-// rollback restores that anchor and resimulates the remaining frames. What it
-// gives up is per-frame checksum desync detection, which cannot exist for frames
-// that were never saved. PS1 keeps the per-frame cadence because SwanStation
-// only writes ~4.3 MB of its 11 MB state; FBNeo and Mupen states are small and
-// keep desync detection as before. Dreamcast-class states are ~61.5 MB, so the
-// anchor cadence is the only way to keep them near 60 fps without rewriting the
-// core's serializer.
+// Dreamcast/NAOMI/Atomiswave keep limited saving in every mode because
+// parallel-dc reports a ~61.5 MB serialized state. Saving and hashing that per
+// frame cost ~35 ms and pinned the game in the mid-40s. Their netplay sessions
+// now run in lockstep (prediction window 0): no prediction means no rollback,
+// and the only state kept is the frame-0 anchor. Desync detection is no longer
+// tied to those states — the frontend reports a cheap deterministic audio+input
+// digest per frame through GekkoNet's healthcheck channel. PS1 keeps the
+// per-frame state cadence because SwanStation only writes ~4.3 MB of its 11 MB
+// state; FBNeo and Mupen states are small and were never changed.
 bool limited_saving_for_runtime()
 {
     if (CoreRollbackGetCore() != CoreRollbackCore::Libretro)
@@ -137,6 +131,23 @@ bool limited_saving_for_runtime()
 
     const char* env = std::getenv("RMGK_PS1_LIMITED_SAVING");
     return env != nullptr && (std::strcmp(env, "1") == 0 || std::strcmp(env, "true") == 0);
+}
+
+// Netplay for the Dreamcast-class libretro cores uses lockstep, like RetroArch:
+// wait for every peer's input instead of predicting and rolling back. The
+// ~61.5 MB serializer then runs only for the frame-0 anchor, and per-frame
+// desync detection is provided by the audio/input healthcheck below.
+bool use_dreamcast_lockstep()
+{
+    if (CoreRollbackGetCore() != CoreRollbackCore::Libretro)
+    {
+        return false;
+    }
+
+    const CoreLibretroSystem system = CoreGetLibretroSystem();
+    return system == CoreLibretroSystem::Dreamcast ||
+           system == CoreLibretroSystem::Naomi ||
+           system == CoreLibretroSystem::Atomiswave;
 }
 
 constexpr int kGekkoMaxLoggedFrames = 600;
@@ -272,6 +283,13 @@ std::vector<PendingGekkoSave> g_GekkoPendingSaves;
 // thread reads the counter and derives FPS over a short window. Only the
 // counter is atomic — the derived samplers live on the reading thread.
 std::atomic<uint64_t> g_GekkoVisibleFrameCount{0};
+
+// Lockstep DC/NAOMI/Atomiswave sessions report a cheap deterministic checksum
+// (emulated audio + the frame inputs) through GekkoNet's healthcheck channel.
+// No 61 MB state is serialised for this, so desync detection stays on without
+// giving back the FPS win.
+bool g_GekkoLockstepChecksums = false;
+int g_GekkoLastChecksumFrame = -1;
 
 // Slots (1-indexed) queued by request_disconnect_player() on another thread,
 // drained on the emulation thread before each frame's update_session. Guarded
@@ -3366,7 +3384,11 @@ bool rmgk_gekko::start_p2p_session(const char* gameName, int players, int inputS
     }
 
     const int clampedLocalDelay = std::clamp(localDelay, 0, 10);
-    const int clampedPredictionWindow = std::clamp(predictionWindow, 1, 10);
+    const bool dcLockstep = use_dreamcast_lockstep();
+    g_GekkoLockstepChecksums = dcLockstep;
+    g_GekkoLastChecksumFrame = -1;
+    const int clampedPredictionWindow =
+        dcLockstep ? 0 : std::clamp(predictionWindow, 1, 10);
 
     GekkoConfig config = {};
     config.num_players = static_cast<unsigned char>(players);
@@ -3375,10 +3397,9 @@ bool rmgk_gekko::start_p2p_session(const char* gameName, int players, int inputS
     config.input_size = static_cast<unsigned int>(inputSize);
     config.state_size = g_GekkoStateCapacity;
     // Per-runtime save cadence; see limited_saving_for_runtime(). Dreamcast/
-    // NAOMI/Atomiswave now use limited saving here too: the old per-frame
-    // cadence cost ~20 ms with a ~61.5 MB state and caused the reported FPS drop.
-    // Desync detection is still requested, but GekkoNet disables it on its own
-    // in limited mode because unsaved frames have no checksum to compare.
+    // NAOMI/Atomiswave run in lockstep here (window 0), so the ~61.5 MB state is
+    // written only for frame 0. Desync detection stays on through the per-frame
+    // audio+input checksum reported from rollback_visible_frame_complete().
     config.limited_saving = limited_saving_for_runtime();
     config.desync_detection = true;
     config.check_distance = 10;
@@ -3621,7 +3642,11 @@ bool rmgk_gekko::start_lobby_session(const char* gameName, int players, int inpu
     }
 
     const int clampedLocalDelay = std::clamp(localDelay, 0, 10);
-    const int clampedPredictionWindow = std::clamp(predictionWindow, 1, 10);
+    const bool dcLockstep = use_dreamcast_lockstep();
+    g_GekkoLockstepChecksums = dcLockstep;
+    g_GekkoLastChecksumFrame = -1;
+    const int clampedPredictionWindow =
+        dcLockstep ? 0 : std::clamp(predictionWindow, 1, 10);
 
     GekkoConfig config = {};
     // ACTOR count, not seat count. GekkoNet's frame advance
@@ -3638,9 +3663,8 @@ bool rmgk_gekko::start_lobby_session(const char* gameName, int players, int inpu
     config.input_size = static_cast<unsigned int>(inputSize);
     config.state_size = g_GekkoStateCapacity;
     // Per-runtime save cadence; see limited_saving_for_runtime(). Lobby matches
-    // are real netplay sessions, so they get the same limited-saving policy as
-    // direct P2P for the ~61.5 MB Dreamcast-class states. Desync detection is
-    // still requested, but GekkoNet disables it on its own in limited mode.
+    // use the same lockstep policy as direct P2P for the ~61.5 MB Dreamcast-class
+    // states: no per-frame save, and desync detection via audio+input checksums.
     config.limited_saving = limited_saving_for_runtime();
     config.desync_detection = true;
     config.check_distance = 10;
@@ -4015,6 +4039,8 @@ void rmgk_gekko::close_session()
     g_GekkoHasLatchedInput = false;
     g_GekkoLatchedFrame = -1;
     g_GekkoLatchedRunningAhead = false;
+    g_GekkoLockstepChecksums = false;
+    g_GekkoLastChecksumFrame = -1;
 #ifdef RMGK_HAVE_P2P_TRANSPORT
     // Flush any remaining frames still inside the rollback window at teardown.
     for (auto& entry : g_GekkoFrameInputBuffer)
@@ -4666,6 +4692,28 @@ static void rollback_visible_frame_complete(
     (void)userData;
 
     g_GekkoVisibleFrameCount.fetch_add(1, std::memory_order_relaxed);
+
+#ifdef RMGK_HAVE_GEKKONET
+    // Lockstep sessions have no per-frame savestate checksum, so feed
+    // GekkoNet's healthcheck with the deterministic audio+input digest of
+    // the frame we just presented. This is what keeps desync detection alive
+    // without paying the 61 MB serialise cost.
+    if (g_GekkoLockstepChecksums && g_GekkoSession != nullptr &&
+        g_GekkoLatchedFrame >= 0 && g_GekkoLatchedFrame != g_GekkoLastChecksumFrame)
+    {
+        unsigned int checksum = CoreRollbackGetFrameChecksum();
+        for (unsigned char inputByte : g_GekkoLatchedInput)
+        {
+            checksum ^= inputByte;
+            checksum *= 16777619u; // FNV-1a 32-bit prime
+        }
+        if (checksum != 0)
+        {
+            g_GekkoLastChecksumFrame = g_GekkoLatchedFrame;
+            gekko_report_frame_checksum(g_GekkoSession, g_GekkoLatchedFrame, checksum);
+        }
+    }
+#endif
 
     if (!g_RmgkPacingTraceEnabled || stats == nullptr ||
         g_RmgkPacingTraceActiveRow == kRmgkPacingTraceInvalidRow ||

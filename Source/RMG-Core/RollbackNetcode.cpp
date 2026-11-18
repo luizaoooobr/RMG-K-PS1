@@ -594,6 +594,21 @@ bool CoreRollbackRunFrame(int flags)
     return runtime_run_frame(flags);
 }
 
+unsigned int CoreRollbackGetFrameChecksum()
+{
+    if (!runtime_initialized())
+    {
+        return 0;
+    }
+
+    if (g_core == CoreRollbackCore::Libretro)
+    {
+        return libretro_rt::GetFrameChecksum();
+    }
+
+    return 0;
+}
+
 bool CoreRollbackGetRunFrameStats(CoreRollbackRunFrameStats& stats)
 {
     if (!runtime_initialized())

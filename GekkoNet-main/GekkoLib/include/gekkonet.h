@@ -190,6 +190,12 @@ GEKKONET_API int gekko_add_actor(GekkoSession* session, GekkoPlayerType player_t
 
 GEKKONET_API void gekko_set_local_delay(GekkoSession* session, int player, unsigned char delay);
 
+// Report a deterministic checksum for an already-emulated frame. Used by
+// lockstep sessions, where no rollback state is saved and the state-storage
+// healthcheck has nothing to compare. The value is exchanged through the same
+// SessionHealth messages and desync events as the state checksum.
+GEKKONET_API void gekko_report_frame_checksum(GekkoSession* session, int frame, unsigned int checksum);
+
 GEKKONET_API void gekko_set_runahead(GekkoSession* session, unsigned char runahead);
 
 GEKKONET_API void gekko_add_local_input(GekkoSession* session, int player, void* input);

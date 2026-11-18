@@ -59,6 +59,12 @@ void gekko_set_local_delay(GekkoSession* session, int player, unsigned char dela
     session->SetLocalDelay(player, delay);
 }
 
+void gekko_report_frame_checksum(GekkoSession* session, int frame, unsigned int checksum)
+{
+    session->ReportFrameChecksum(static_cast<Frame>(frame),
+                                 static_cast<u32>(checksum));
+}
+
 void gekko_set_runahead(GekkoSession* session, unsigned char runahead)
 {
     session->SetRunahead(runahead);

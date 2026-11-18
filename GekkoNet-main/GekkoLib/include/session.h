@@ -15,6 +15,8 @@
 struct GekkoSession {
     virtual void Init(GekkoConfig* config) = 0;
     virtual void SetLocalDelay(i32 player, u8 delay) = 0;
+    // Default no-op: only the game session exchanges per-frame checksums.
+    virtual void ReportFrameChecksum(Frame frame, u32 checksum) {}
     virtual void SetRunahead(u8 runahead) = 0;
     virtual void SetNetAdapter(GekkoNetAdapter* adapter) = 0;
     virtual i32 AddActor(GekkoPlayerType type, GekkoNetAddress* addr) = 0;
@@ -37,6 +39,8 @@ namespace Gekko {
         void Init(GekkoConfig* config) override;
 
         void SetLocalDelay(i32 player, u8 delay) override;
+
+        void ReportFrameChecksum(Frame frame, u32 checksum) override;
 
         void SetRunahead(u8 runahead) override;
 

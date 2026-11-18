@@ -194,6 +194,11 @@ namespace libretro_rt
 
     void GetRunFrameStats(m64p_rollback_run_frame_stats& out);
 
+    // Deterministic checksum of the audio produced by the most recent
+    // RunFrame(). Used by lockstep netplay for per-frame desync detection
+    // without serialising the 61 MB Dreamcast-class state.
+    unsigned int GetFrameChecksum();
+
     // Core option override, "key=value". Only applied when the loaded core
     // actually declares `key`; unknown keys are ignored. Must be called before
     // Initialize(). Core defaults are deterministic across peers, so this is

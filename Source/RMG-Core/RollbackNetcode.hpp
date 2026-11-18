@@ -181,6 +181,10 @@ bool CoreRollbackExecute(m64p_rollback_execute_callbacks& callbacks);
 bool CoreRollbackRunFrame(int flags);
 bool CoreRollbackGetRunFrameStats(CoreRollbackRunFrameStats& stats);
 
+// Deterministic per-frame checksum from the active runtime (currently the
+// libretro audio stream). Returns 0 for runtimes that do not expose one.
+unsigned int CoreRollbackGetFrameChecksum(void);
+
 // Boot-time log lines from the active runtime (empty when the runtime does not
 // expose one). Used to record which machine each peer booted.
 std::string CoreRollbackRecentCoreLog(void);

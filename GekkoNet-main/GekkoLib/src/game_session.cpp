@@ -60,8 +60,32 @@ void Gekko::GameSession::Init(GekkoConfig* config)
     _disconnected_input = std::make_unique<u8[]>(_config.input_size);
     std::memset(_disconnected_input.get(), 0, _config.input_size);
 
-    // we only detect desyncs whenever we are not limited saving for now.
-    _config.desync_detection = _config.limited_saving ? false : _config.desync_detection;
+    // Limited saving normally disables checksum detection because unsaved
+    // frames have no state checksum. Lockstep is the exception: the frontend
+    // reports a deterministic per-frame checksum directly through
+    // ReportFrameChecksum(), so detection stays available without states.
+    _config.desync_detection =
+        (_config.limited_saving && !IsLockstepActive()) ? false : _config.desync_detection;
+}
+
+void Gekko::GameSession::ReportFrameChecksum(Frame frame, u32 checksum)
+{
+    if (!_config.desync_detection || frame < 0) {
+        return;
+    }
+
+    _msg.local_health[frame] = checksum;
+    _msg.SendSessionHealth(frame, checksum);
+
+    // Keep the same short comparison window SendSessionHealthCheck uses.
+    const Frame keep_from = frame - 100;
+    for (auto iter = _msg.local_health.begin(); iter != _msg.local_health.end(); ) {
+        if (iter->first < keep_from) {
+            iter = _msg.local_health.erase(iter);
+        } else {
+            ++iter;
+        }
+    }
 }
 
 void Gekko::GameSession::SetRunahead(u8 runahead)
@@ -166,8 +190,11 @@ GekkoGameEvent** Gekko::GameSession::UpdateSession(i32* count)
         // check if we need to save the confirmed frame
         HandleSavingConfirmedFrame();
 
-        // send a healthcheck if applicable
-        SendSessionHealthCheck();
+        // send a healthcheck if applicable. Lockstep has no serialised state
+        // for this frame; the frontend reports its checksum directly instead.
+        if (!IsLockstepActive()) {
+            SendSessionHealthCheck();
+        }
 
         // check if the session is still doing alright.
         SessionIntegrityCheck();
