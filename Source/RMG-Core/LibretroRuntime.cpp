@@ -1211,6 +1211,30 @@ bool Initialize(const char* corePath, const char* gamePath, const char* systemDi
             // recompiler's emitted code can differ between CPU families.
             SetOptionOverride("reicast_arm7_recompiler", "disabled");
         }
+        if (g_memoryCardDisabled)
+        {
+            // Network session only: offline keeps the user's normal BIOS setup.
+            //
+            // parallel-dc defaults to use_real_bios=enabled. The Windows
+            // portable ships naomi.zip under Data/naomi/system/dc, but the
+            // Linux AppImage ships no BIOS at all. The two peers therefore
+            // boot different machines (real BIOS vs HLE/reios) with different
+            // initial state and audio -- a desync on frame 0, before any
+            // input. "Default" region is not neutral either: it becomes 3,
+            // which matches no NAOMI BIOS blob and makes the core pick one by
+            // zip order. Force HLE + a fixed region so the boot state is
+            // derived from the game header on both sides, not from files that
+            // happen to exist on each host.
+            //
+            // Atomiswave is unaffected: the core requires awbios.zip even
+            // with this option off (naomi_cart.c skips the BIOS only for
+            // non-AW cards), and the value is read before the core hides it.
+            if (g_system == System::Naomi)
+            {
+                SetOptionOverride("reicast_use_real_bios", "disabled");
+                SetOptionOverride("reicast_region", "Japan");
+            }
+        }
     }
 
     // The DC core declares JOYPAD subclasses (twinstick, ASCII stick). Forcing
