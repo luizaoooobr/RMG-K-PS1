@@ -135,6 +135,7 @@ $XVFB_RUN "$script_dir/lib4bin" --dst-dir "$bin_dir" \
 # Prepare sharun
 "$bin_dir/sharun" -g
 cp "$script_dir/AppRun" "$bin_dir"
+chmod +x "$bin_dir/AppRun"
 
 # make appimage
 "$script_dir/appimagetool" --comp zstd \
