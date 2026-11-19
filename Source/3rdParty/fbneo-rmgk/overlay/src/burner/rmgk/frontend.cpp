@@ -35,6 +35,11 @@ INT32 BurnHDDGetPath(INT32 nIndex, const TCHAR* pszExt, TCHAR* pszPath) { (void)
 INT32 BurnHDDWrite(BurnHDD* pDisk, UINT32 nLba, UINT32 nCount, const void* pSrc) { (void)pDisk; (void)nLba; (void)nCount; (void)pSrc; return 1; }
 void BurnHDDDiscardWrites(BurnHDD* pDisk) { (void)pDisk; }
 
+// General-purpose debug counter. Several drivers declare "extern int counter"
+// under FBNEO_DEBUG (enabled by meson's debug buildtype); the headless frontend
+// defines it in headless_misc.cpp, but the lib frontend does not link that file.
+int counter = 0;
+
 // ---------------------------------------------------------------------------
 // Application search paths (normally set up by support_paths.cpp)
 // ---------------------------------------------------------------------------
