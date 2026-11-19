@@ -104,9 +104,14 @@ if (TARGET n02)
     target_include_directories(RMG-Core PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/../n02
     )
-    if (WIN32)
-        target_link_options(RMG-Core PRIVATE -Wl,--export-all-symbols)
-    endif()
+endif()
+
+# The frontend calls Core* helpers that are not individually marked with
+# CORE_EXPORT. With selective export enabled on Windows those calls fail to
+# link in builds without n02/NETPLAY, so always export everything from the
+# shared core (NETPLAY builds already did this through the n02 block above).
+if (WIN32)
+    target_link_options(RMG-Core PRIVATE -Wl,--export-all-symbols)
 endif()
 
 # FBNeo (headless lib core) — built by the fbneo ExternalProject in
