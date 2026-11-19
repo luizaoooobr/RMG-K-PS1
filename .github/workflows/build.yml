@@ -99,6 +99,22 @@ jobs:
           cmake --build "$build_dir" --parallel "$(nproc)"
           cmake --install "$build_dir" --strip --prefix="$bin_dir/usr"
         shell: bash
+      - name: Prepare libretro cores (PS1 / DC)
+        if: ${{ matrix.features == 'ON' && matrix.architecture == 'x86_64' && matrix.configuration == 'Release' }}
+        env:
+          CORES_TAG: vdev-9999
+        run: |
+          # Create.sh bundles the patched cores in the AppImage so netplay stays
+          # deterministic. They are not checked in (see Package/*Core/.gitignore),
+          # so reuse the pinned binaries already published on the vdev-9999
+          # release instead of rebuilding a third-party core on every job.
+          base="https://github.com/${{ github.repository }}/releases/download/$CORES_TAG"
+          curl -fL "$base/swanstation_libretro-$CORES_TAG-linux64.so" \
+            -o Package/PsxCore/swanstation_libretro.so
+          curl -fL "$base/parallel_dc_libretro-$CORES_TAG-linux64.so" \
+            -o Package/DcCore/parallel_dc_libretro.so
+          ls -l Package/PsxCore/swanstation_libretro.so Package/DcCore/parallel_dc_libretro.so
+        shell: bash
       - name: Create AppImage
         if: ${{ matrix.features == 'ON' && matrix.architecture == 'x86_64' && matrix.configuration == 'Release' }}
         run: |
