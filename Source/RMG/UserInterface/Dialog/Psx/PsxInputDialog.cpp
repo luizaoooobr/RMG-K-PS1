@@ -77,9 +77,7 @@ PsxInputDialog::PsxInputDialog(LibretroInputProfileId profile, QWidget* parent)
 
     for (int p = 0; p < 4; p++)
     {
-        const std::string section =
-            std::string(m_profile->deviceSectionPrefix) + std::to_string(p);
-        m_deviceType[p] = CoreSettingsGetIntValue(SettingsID::FBNeo_DeviceType, section);
+        m_deviceType[p] = UserInterface::Dialog::loadProfileDeviceType(*m_profile, p, 0);
     }
 
     deviceCombo->setCurrentIndex(deviceCombo->findData(m_deviceType[0]));
@@ -107,7 +105,17 @@ PsxInputDialog::PsxInputDialog(LibretroInputProfileId profile, QWidget* parent)
     }
     layout->addWidget(m_table);
 
-    m_status = new QLabel(tr("Click 'Bind' then press a key or button."), this);
+    // Double-clicking any cell of a row starts capture, exactly like the
+    // "Bind" button in that row.
+    connect(m_table, &QTableWidget::cellDoubleClicked, this,
+            [this](int row, int) {
+                if (row >= 0 && row < m_profile->count)
+                {
+                    this->startCapture(row);
+                }
+            });
+
+    m_status = new QLabel(tr("Click 'Bind' or double-click a row, then press a key or button."), this);
     layout->addWidget(m_status);
 
     auto* saveBtn = new QPushButton(tr("Save"), this);
@@ -119,37 +127,19 @@ PsxInputDialog::PsxInputDialog(LibretroInputProfileId profile, QWidget* parent)
         SDL_InitSubSystem(SDL_INIT_GAMEPAD);
     }
 
-    m_names.clear();
-    for (int i = 0; i < count; i++)
+    // Load existing bindings from the unified section and both legacy arcade
+    // sections. Every historic name maps to the same hardware button, so a
+    // saved key follows that button instead of the row number it used to have.
+    std::vector<std::string> savedNames;
+    std::vector<int> savedTypes, savedData, savedExtra;
+    UserInterface::Dialog::loadProfileBindingSettings(*m_profile, savedNames, savedTypes,
+                                                      savedData, savedExtra);
+    std::vector<std::string> boundNames;
+    remapLibretroSavedBindings(*m_profile, savedNames, savedTypes, savedData, savedExtra,
+                               boundNames, m_types, m_data, m_extra);
+    for (const std::string& name : boundNames)
     {
-        m_names.push_back(QString::fromUtf8(m_profile->names[i]));
-    }
-    m_types.assign(count, Source_Keyboard);
-    m_data.assign(count, 0);
-    m_extra.assign(count, 0);
-    for (int i = 0; i < count; i++)
-    {
-        m_data[i] = m_profile->defaults[i];
-    }
-
-    // load existing
-    const std::string section = m_profile->bindingSection;
-    const std::vector<int> types = CoreSettingsGetIntListValue(SettingsID::FBNeo_BindingTypes, section);
-    const std::vector<int> data = CoreSettingsGetIntListValue(SettingsID::FBNeo_BindingData, section);
-    const std::vector<int> extra = CoreSettingsGetIntListValue(SettingsID::FBNeo_BindingExtraData, section);
-    const std::vector<std::string> names = CoreSettingsGetStringListValue(SettingsID::FBNeo_BindingNames, section);
-    if (names.size() == m_names.size() && types.size() == m_types.size() &&
-        data.size() == m_data.size() && extra.size() == m_extra.size())
-    {
-        for (size_t i = 0; i < m_data.size(); i++)
-        {
-            if (!names[i].empty())
-            {
-                m_types[i] = types[i];
-                m_data[i] = data[i];
-                m_extra[i] = extra[i];
-            }
-        }
+        m_names.push_back(QString::fromUtf8(name));
     }
 
     m_pollTimer = new QTimer(this);
@@ -167,7 +157,7 @@ PsxInputDialog::PsxInputDialog(LibretroInputProfileId profile, QWidget* parent)
             refreshTable();
             if (m_status != nullptr)
             {
-                m_status->setText(tr("Bound. Click 'Bind' for another button."));
+                m_status->setText(tr("Bound. Click 'Bind' or double-click another row."));
             }
         }
     });
@@ -256,6 +246,14 @@ void PsxInputDialog::refreshTable()
 
 void PsxInputDialog::startCapture(int row)
 {
+    if (row < 0 || row >= m_profile->count || m_capturing == row)
+    {
+        return;
+    }
+    if (m_capturing >= 0)
+    {
+        stopCapture();
+    }
     m_capturing = row;
     grabKeyboard();
     openCaptureDevices();
@@ -461,7 +459,7 @@ void PsxInputDialog::keyPressEvent(QKeyEvent* event)
         m_extra[idx] = m_capturedBinding.extra;
         stopCapture();
         refreshTable();
-        if (m_status != nullptr) m_status->setText(tr("Bound. Click 'Bind' for another button."));
+        if (m_status != nullptr) m_status->setText(tr("Bound. Click 'Bind' or double-click another row."));
     }
 }
 

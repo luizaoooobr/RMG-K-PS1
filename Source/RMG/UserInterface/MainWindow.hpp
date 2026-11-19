@@ -340,7 +340,6 @@ class MainWindow : public QMainWindow, private Ui::MainWindow
     void on_Action_Psx_Input(void);
     void on_Action_Dc_Input(void);
     void on_Action_Naomi_Input(void);
-    void on_Action_Atom_Input(void);
     void on_Action_Arcade_Dip(void);
     void on_Action_Arcade_Test(void);
 

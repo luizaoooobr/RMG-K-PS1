@@ -1700,11 +1700,14 @@ static const UserInterface::Dialog::LibretroInputProfile& libretroPadProfile(int
 
 static int libretroPadProfileIndex(CoreLibretroSystem system)
 {
+    // NAOMI 1/2 and Atomiswave share one arcade profile and one saved binding
+    // set, exactly like Flycast Dojo's unified arcade controls. Only Dreamcast
+    // keeps its own input dialog.
     switch (system)
     {
         case CoreLibretroSystem::Dreamcast:  return 1;
         case CoreLibretroSystem::Naomi:      return 2;
-        case CoreLibretroSystem::Atomiswave: return 3;
+        case CoreLibretroSystem::Atomiswave: return 2;
         default:                             return 0;
     }
 }
@@ -1857,26 +1860,79 @@ private:
     {
         const auto& profile = libretroPadProfile(profileIndex);
         LibretroPadState& pad = this->libretroPads[profileIndex];
-        const std::vector<int> data = CoreSettingsGetIntListValue(
-            SettingsID::FBNeo_BindingData, profile.bindingSection);
 
-        for (int i = 0; i < profile.count; i++)
+        std::vector<std::string> savedNames;
+        std::vector<int> savedTypes, savedData, savedExtra;
+        UserInterface::Dialog::loadProfileBindingSettings(profile, savedNames, savedTypes,
+                                                          savedData, savedExtra);
+
+        // Every historic name of a row maps to the same hardware button now.
+        std::unordered_map<std::string, int> rowOf;
+        for (int row = 0; row < profile.count; row++)
         {
-            pad.keys[i] = profile.defaults[i];
-        }
-        if (data.size() >= static_cast<size_t>(profile.count))
-        {
-            for (int i = 0; i < profile.count; i++)
+            if (profile.names[row] != nullptr)
             {
-                if (data[i] > SDL_SCANCODE_UNKNOWN && data[i] < SDL_SCANCODE_COUNT)
+                rowOf[profile.names[row]] = row;
+            }
+            for (int n = 0; n < 6; n++)
+            {
+                const char* legacy = profile.legacyNames[row][n];
+                if (legacy != nullptr)
                 {
-                    pad.keys[i] = data[i];
+                    rowOf[legacy] = row;
                 }
             }
         }
-        // Load the full binding lists (keyboard + gamepad + axes) saved by the
-        // dialog, so gamepad buttons can be remapped too.
-        loadFbneoBindings(pad.bindings, profile.bindingSection);
+
+        pad.bindings.clear();
+        bool keySet[16] = {};
+        bool rowSeen[16] = {};
+        for (int row = 0; row < profile.count; row++)
+        {
+            pad.keys[row] = profile.defaults[row];
+        }
+
+        const size_t count = std::min(savedNames.size(),
+            std::min(savedTypes.size(), std::min(savedData.size(), savedExtra.size())));
+        for (size_t i = 0; i < count; i++)
+        {
+            if (savedNames[i].empty())
+            {
+                continue;
+            }
+            auto it = rowOf.find(savedNames[i]);
+            if (it == rowOf.end())
+            {
+                continue;
+            }
+            const int row = it->second;
+            // loadProfileBindingSettings() returns the unified section first and
+            // then both legacy ones. Historic names resolve to the same row as
+            // the current name, so without this guard one physical button ends
+            // up bound twice on the same row and lights two bits at once (e.g.
+            // WEST on both BTN1 and the old BTN3). The first occurrence wins.
+            if (rowSeen[row])
+            {
+                continue;
+            }
+            rowSeen[row] = true;
+            FbneoBinding binding;
+            binding.type  = savedTypes[i];
+            binding.data  = savedData[i];
+            binding.extra = savedExtra[i];
+            pad.bindings[profile.names[row]].push_back(binding);
+            if (!keySet[row] && binding.type == FbneoInputSource_Keyboard &&
+                binding.data > SDL_SCANCODE_UNKNOWN && binding.data < SDL_SCANCODE_COUNT)
+            {
+                pad.keys[row] = binding.data;
+                keySet[row] = true;
+            }
+        }
+
+        // Only explicitly saved bindings go into pad.bindings. The keyboard
+        // default stays in pad.keys and is used only for rows the user never
+        // touched. This is what Flycast does: a configured control replaces the
+        // default mapping for that button instead of stacking on top of it.
     }
 
     void loadLibretroPlayers(int profileIndex)
@@ -1888,9 +1944,7 @@ private:
             FbneoArcadePlayer& playerState = pad.players[player];
             playerState = FbneoArcadePlayer();
 
-            const std::string section =
-                std::string(profile.deviceSectionPrefix) + std::to_string(player);
-            const int type = CoreSettingsGetIntValue(SettingsID::FBNeo_DeviceType, section);
+            const int type = UserInterface::Dialog::loadProfileDeviceType(profile, player, 0);
             // Dialog values: 0=None, 1=Keyboard, 2=Gamepad/Joystick. None still
             // opens the first free device so a mapping works even if the user
             // forgot to pick one.
@@ -2276,6 +2330,7 @@ private:
     {
         const auto& profile = libretroPadProfile(profileIndex);
         LibretroPadState& padState = this->libretroPads[profileIndex];
+        const bool trace = fbneoTraceEnabled();
 
         SDL_PumpEvents();
         SDL_UpdateJoysticks();
@@ -2289,6 +2344,42 @@ private:
             }
         }
 
+        // Flycast-style remapping: a control assigned in the dialog owns its
+        // joypad bit. The hardcoded standard gamepad layout must not fire that
+        // bit as well, otherwise one press triggers two cabinet buttons (for
+        // example remapping SOUTH to BTN6 would still press BTN1). This has to
+        // consider keyboard assignments too, not only gamepad buttons.
+        bool claimedBits[16] = {};
+        bool claimedPadButtons[SDL_GAMEPAD_BUTTON_COUNT] = {};
+        bool claimedPadAxes[SDL_GAMEPAD_AXIS_COUNT] = {};
+        for (int row = 0; row < profile.count; row++)
+        {
+            const auto it = padState.bindings.find(profile.names[row]);
+            if (it == padState.bindings.end())
+            {
+                continue;
+            }
+            if (!it->second.empty() && profile.bits[row] >= 0 && profile.bits[row] <= 15)
+            {
+                claimedBits[profile.bits[row]] = true;
+            }
+            // Flycast's set_button() removes the assigned physical source from
+            // every other action as well. Do the same with the hardcoded layout.
+            for (const FbneoBinding& binding : it->second)
+            {
+                if (binding.type == FbneoInputSource_GamepadButton &&
+                    binding.data >= 0 && binding.data < SDL_GAMEPAD_BUTTON_COUNT)
+                {
+                    claimedPadButtons[binding.data] = true;
+                }
+                else if (binding.type == FbneoInputSource_GamepadAxis &&
+                         binding.data >= 0 && binding.data < SDL_GAMEPAD_AXIS_COUNT)
+                {
+                    claimedPadAxes[binding.data] = true;
+                }
+            }
+        }
+
         for (int player = 0; player < FBNEO_MAX_PLAYERS; player++)
         {
             const FbneoArcadePlayer& playerState = padState.players[player];
@@ -2298,9 +2389,16 @@ private:
             int16_t  ly = 0;
             int16_t  rx = 0;
             int16_t  ry = 0;
+            std::string fired;
+            const auto addFired = [&fired](const char* name, int bit)
+            {
+                if (!fired.empty()) fired += ',';
+                fired += name;
+                fired += "(bit" + std::to_string(bit) + ")";
+            };
 
-            // Keyboard bindings (and the legacy P1 scancode fallback). The
-            // saved binding list is global but can be assigned to any port.
+            // Keyboard fallback for rows the user never configured. Saved
+            // bindings are evaluated once below, with the gamepad available.
             {
                 const auto key = [this](int scancode)
                 {
@@ -2310,26 +2408,26 @@ private:
 
                 for (int row = 0; row < profile.count; row++)
                 {
-                    bool pressed = false;
                     const auto it = padState.bindings.find(profile.names[row]);
-                    if (it == padState.bindings.end() || it->second.empty())
+                    if (it != padState.bindings.end() && !it->second.empty())
                     {
-                        pressed = (player == 0) && key(padState.keys[row]);
+                        continue;
                     }
-                    else
-                    {
-                        pressed = evalFbneoBindings(it->second, this->keyboardState, nullptr, nullptr);
-                    }
-                    if (!pressed || profile.bits[row] < 0 || profile.bits[row] > 15)
+                    if (player != 0 || !key(padState.keys[row]))
                     {
                         continue;
                     }
                     const int bit = profile.bits[row];
+                    if (bit < 0 || bit > 15)
+                    {
+                        continue;
+                    }
                     mask |= static_cast<uint16_t>(1u << bit);
                     if (bit == 4)  { ly = 32767; }
                     if (bit == 5)  { ly = -32767; }
                     if (bit == 6)  { lx = -32767; }
                     if (bit == 7)  { lx = 32767; }
+                    if (trace) addFired(profile.names[row], bit);
                 }
             }
 
@@ -2369,41 +2467,35 @@ private:
             }
             if (pad != nullptr || joy != nullptr)
             {
-                // Standard gamepad layout: these are raw libretro joypad bits,
-                // identical for every profile. The profile's names/bits table
-                // only affects the bindings saved by the dialog below.
+                // Standard gamepad layout, but only for bits the user did not
+                // configure in the input dialog. A configured control owns its
+                // bit exclusively, like Flycast's input remapping.
                 if (pad != nullptr)
                 {
-                    if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_SOUTH))         { mask |= 1u << 0; }
-                    if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_WEST))          { mask |= 1u << 1; }
-                    if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_BACK))          { mask |= 1u << 2; }
-                    if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_START))         { mask |= 1u << 3; }
-                    if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_DPAD_UP))       { mask |= 1u << 4; }
-                    if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_DPAD_DOWN))     { mask |= 1u << 5; }
-                    if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_DPAD_LEFT))     { mask |= 1u << 6; }
-                    if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_DPAD_RIGHT))    { mask |= 1u << 7; }
-                    if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_EAST))          { mask |= 1u << 8; }
-                    if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_NORTH))         { mask |= 1u << 9; }
-                    if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER)) { mask |= 1u << 10; }
-                    if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER)){ mask |= 1u << 11; }
-                    if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_LEFT_STICK))    { mask |= 1u << 14; }
-                    if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_RIGHT_STICK))   { mask |= 1u << 15; }
-                }
-
-                // Supplementary: apply any remapped bindings saved by the
-                // input dialog (in addition to the standard layout).
-                for (int row = 0; row < profile.count; row++)
-                {
-                    const auto it = padState.bindings.find(profile.names[row]);
-                    if (it == padState.bindings.end() || it->second.empty())
+                    const auto standard = [pad, &mask, &claimedBits, &claimedPadButtons,
+                                           trace, &addFired](SDL_GamepadButton button, int bit)
                     {
-                        continue;
-                    }
-                    if (evalFbneoBindings(it->second, this->keyboardState, pad, joy) &&
-                        profile.bits[row] >= 0 && profile.bits[row] <= 15)
-                    {
-                        mask |= static_cast<uint16_t>(1u << profile.bits[row]);
-                    }
+                        if (!claimedBits[bit] && !claimedPadButtons[static_cast<int>(button)] &&
+                            SDL_GetGamepadButton(pad, button))
+                        {
+                            mask |= static_cast<uint16_t>(1u << bit);
+                            if (trace) addFired("padrão", bit);
+                        }
+                    };
+                    standard(SDL_GAMEPAD_BUTTON_SOUTH,         0);
+                    standard(SDL_GAMEPAD_BUTTON_WEST,          1);
+                    standard(SDL_GAMEPAD_BUTTON_BACK,          2);
+                    standard(SDL_GAMEPAD_BUTTON_START,         3);
+                    standard(SDL_GAMEPAD_BUTTON_DPAD_UP,       4);
+                    standard(SDL_GAMEPAD_BUTTON_DPAD_DOWN,     5);
+                    standard(SDL_GAMEPAD_BUTTON_DPAD_LEFT,     6);
+                    standard(SDL_GAMEPAD_BUTTON_DPAD_RIGHT,    7);
+                    standard(SDL_GAMEPAD_BUTTON_EAST,          8);
+                    standard(SDL_GAMEPAD_BUTTON_NORTH,         9);
+                    standard(SDL_GAMEPAD_BUTTON_LEFT_SHOULDER, 10);
+                    standard(SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER,11);
+                    standard(SDL_GAMEPAD_BUTTON_LEFT_STICK,    14);
+                    standard(SDL_GAMEPAD_BUTTON_RIGHT_STICK,   15);
                 }
 
                 if (pad != nullptr)
@@ -2419,8 +2511,34 @@ private:
 
                     const int lt = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER);
                     const int rt = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER);
-                    if (lt > 8000)  { mask |= 1u << 12; }
-                    if (rt > 8000)  { mask |= 1u << 13; }
+                    if (lt > 8000 && !claimedBits[12] &&
+                        !claimedPadAxes[SDL_GAMEPAD_AXIS_LEFT_TRIGGER])
+                    {
+                        mask |= 1u << 12;
+                    }
+                    if (rt > 8000 && !claimedBits[13] &&
+                        !claimedPadAxes[SDL_GAMEPAD_AXIS_RIGHT_TRIGGER])
+                    {
+                        mask |= 1u << 13;
+                    }
+                }
+            }
+
+            // Saved bindings are evaluated once, even with no gamepad attached,
+            // so a keyboard-only setup keeps working.
+            for (int row = 0; row < profile.count; row++)
+            {
+                const auto it = padState.bindings.find(profile.names[row]);
+                if (it == padState.bindings.end() || it->second.empty())
+                {
+                    continue;
+                }
+                if (evalFbneoBindings(it->second, this->keyboardState, pad, joy) &&
+                    profile.bits[row] >= 0 && profile.bits[row] <= 15)
+                {
+                    const int bit = profile.bits[row];
+                    mask |= static_cast<uint16_t>(1u << bit);
+                    if (trace) addFired(profile.names[row], bit);
                 }
             }
 
@@ -2433,7 +2551,7 @@ private:
 
             // Trace only when a value changes, so the log stays small and can be
             // collected from a normal play session (RMGK_FBNEO_TRACE=1).
-            if (fbneoTraceEnabled() && this->lastMask[player] != mask)
+            if (trace && this->lastMask[player] != mask)
             {
                 this->lastMask[player] = mask;
                 const std::string logPath =
@@ -2441,9 +2559,10 @@ private:
                 FILE* f = std::fopen(logPath.c_str(), "a");
                 if (f != nullptr)
                 {
-                    std::fprintf(f, "P%d mask=0x%04x lx=%d ly=%d rx=%d ry=%d dev=%d pad=%p joy=%p\n",
+                    std::fprintf(f,
+                        "P%d mask=0x%04x lx=%d ly=%d rx=%d ry=%d dev=%d pad=%p joy=%p rows=[%s]\n",
                         player + 1, mask, (int)lx, (int)ly, (int)rx, (int)ry,
-                        (int)playerState.device, (void*)pad, (void*)joy);
+                        (int)playerState.device, (void*)pad, (void*)joy, fired.c_str());
                     std::fclose(f);
                 }
             }

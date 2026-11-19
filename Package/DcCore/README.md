@@ -56,17 +56,49 @@ continue to use the normal VMU/save directories.
 
 All libretro families share the same 12-byte per-player packet (16-bit button
 mask plus four 16-bit axes). The input dialogs keep separate settings sections
-so a Dreamcast binding never overwrites a PlayStation one:
+so a Dreamcast binding never overwrites a PlayStation one. NAOMI 1/2 and
+Atomiswave, however, share **one** arcade profile and dialog (like Flycast
+Dojo's unified arcade controls):
 
-| Menu / toolbar | Profile | Bits used |
+| Menu / toolbar | Settings section | Profile |
 | --- | --- | --- |
-| `inp psx` | PlayStation, 14 rows | legacy PS1 names/bits |
-| `inp dc` | Dreamcast, 16 rows | JOYPAD A/B/X/Y/START/SELECT/D-Pad/L/R/L3/R3 |
-| `inp naomi` | NAOMI, 16 rows | BTN1..BTN8, COIN, START, D-Pad, TEST, SERVICE |
-| `inp atom` | Atomiswave, 16 rows | BTN1..BTN5, COIN, START, D-Pad, TEST, SERVICE |
+| `inp psx` | `RMG PS1 Input - Global` | PlayStation, 14 rows |
+| `inp dc` | `RMG DC Input - Global` | Dreamcast, 16 rows |
+| `inp naomi+atom` | `RMG Arcade Input - Global` | NAOMI 1/2 + Atomiswave, 16 rows |
 
-TEST and SERVICE are exposed on bits 14 and 15, matching the upstream NAOMI and
-Atomiswave joymaps.
+The old `RMG NAOMI Input - Global` / `RMG Atom Input - Global` sections and
+their `RMG NAOMI Device - P` / `RMG Atom Device - P` counterparts are migrated
+on load by button name, so an existing key keeps following the same cabinet
+button. The dialog uses combined legends that follow the cabinet order for
+CvS2: `BTN1 - Soco Fraco / A`, `BTN2 - Soco Medio / B`,
+`BTN3 - Soco Forte / C`, `BTN4 - Chute Fraco / D`, `BTN5 - Chute Medio / E`,
+`BTN6 - Chute Forte / F`, `BTN7 - Macro de 3 socos / Macro A+B+C` and
+`BTN8 - Macros de 3 Chutes / Macro D+E+F`. The old legends remain as aliases,
+so saved bindings keep following the same cabinet button. Clicking a row twice
+starts capture just like the `Bind` button.
+
+The arcade dialog order and the core's joymaps are:
+
+| Dialog row | RETRO joypad bit | `nao_joymap` | `aw_joymap` |
+| --- | --- | --- | --- |
+| D-Pad Up/Down/Left/Right | 4/5/6/7 | D-Pad | D-Pad |
+| BTN1 / BTN3 | 0 / 1 | BTN1 / BTN3 | BTN1 / BTN3 |
+| Coin / Start | 2 / 3 | Coin / Start | Coin / Start |
+| BTN2 / BTN4 | 8 / 9 | BTN2 / BTN4 | BTN2 / BTN4 |
+| BTN5 | 11 | BTN5 | BTN5 |
+| BTN6 / BTN8 / BTN7 | 10 / 12 / 13 | BTN6 / BTN8 / BTN7 | `0` (not wired) |
+| Teste / Service | 14 / 15 | Test / Service | Test / Service |
+
+Atomiswave's `aw_joymap` explicitly maps bits 10, 12 and 13 to `0`, so BTN6,
+BTN7 and BTN8 cannot be triggered there without patching the core; the unified
+profile keeps the NAOMI mapping because the other buttons and axes are shared.
+Remapping follows Flycast: an assigned control owns both its cabinet bit and
+its physical source. The frontend's hardcoded gamepad layout skips any bit that
+was configured in the dialog and any gamepad button/axis that was assigned to a
+different row. With `BTN1 = WEST` and `BTN4 = SOUTH`, pressing `SOUTH` now fires
+only `BTN4` and pressing `WEST` only `BTN1` — previously both also triggered the
+unrelated default buttons. Saved keyboard bindings are evaluated even with no
+gamepad connected; rows never configured keep the default keyboard keys.
 
 ## Linux
 

@@ -19,10 +19,11 @@ namespace UserInterface
 namespace Dialog
 {
 
-// Input remapper for every libretro-driven machine (PlayStation, Dreamcast,
-// NAOMI, Atomiswave), using the same capture mechanism as the arcade dialog:
-// keyboard, gamepad and joystick, with proper baseline seeding. Each profile
-// has its own settings section so mappings never leak between systems.
+// Input remapper for every libretro-driven machine (PlayStation, Dreamcast and
+// one unified NAOMI 1/2 + Atomiswave arcade profile), using the same capture
+// mechanism as the arcade dialog: keyboard, gamepad and joystick, with proper
+// baseline seeding. Each profile has its own settings section; the arcade
+// profile migrates the old NAOMI and Atom sections into a single one.
 class PsxInputDialog : public QDialog
 {
     Q_OBJECT
