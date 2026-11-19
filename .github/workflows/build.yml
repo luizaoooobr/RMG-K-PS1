@@ -42,7 +42,7 @@ jobs:
           sudo apt-get -y upgrade
           sudo apt-get -y install cmake libusb-1.0-0-dev libhidapi-dev libsamplerate0-dev libspeex-dev libminizip-dev libfreetype6-dev \
             libgl1-mesa-dev libglu1-mesa-dev pkg-config zlib1g-dev binutils-dev libspeexdsp-dev qt6-base-dev qt6-tools-dev qt6-translations-l10n libqt6svg6-dev libqt6websockets6-dev libvulkan-dev \
-            build-essential nasm git zip appstream xvfb qt6ct mesa-vulkan-drivers
+            build-essential nasm git zip appstream xvfb qt6ct mesa-vulkan-drivers meson
 
           # sdl3 dependencies
           sudo apt-get -y install build-essential git make \
@@ -54,6 +54,13 @@ jobs:
       - name: Prepare Environment
         run: |
           echo "GIT_REVISION=$(git describe --tags --always)" >> $GITHUB_ENV
+      - name: Prepare FBNeo
+        run: |
+          fbneo_dir="$(pwd)/../FBNeo"
+          git clone --filter=blob:none https://github.com/finalburnneo/FBNeo.git "$fbneo_dir"
+          git -C "$fbneo_dir" checkout eab65d11
+          echo "FBNEO_DIR=$fbneo_dir" >> $GITHUB_ENV
+        shell: bash
       - name: Build SDL3
         run: |
           export sdl_dir="$(pwd)/../SDL3"
@@ -78,6 +85,7 @@ jobs:
     
           mkdir $build_dir Bin/ -p
           cmake -S "$src_dir" -B "$build_dir" -DCMAKE_BUILD_TYPE="${{ matrix.configuration }}" \
+                -DRMGK_FBNEO_DIR="$FBNEO_DIR" \
                 -DNETPLAY=${{ matrix.features }} \
                 -DVRU=${{ matrix.features }} \
                 -DUSE_ANGRYLION=${{ matrix.features }} \
@@ -138,6 +146,8 @@ jobs:
             mingw-w64-ucrt-x86_64-libsamplerate
             mingw-w64-ucrt-x86_64-nasm
             mingw-w64-ucrt-x86_64-vulkan-headers
+            mingw-w64-ucrt-x86_64-meson
+            mingw-w64-ucrt-x86_64-perl
             git
             curl
       # Temporary mitigation for the CRT-triggered AV detections; recheck newer CRTs before updating.
@@ -165,6 +175,14 @@ jobs:
           $env:revision = git describe --tags --always
           echo "GIT_REVISION=$env:revision" >> $env:GITHUB_ENV
         shell: pwsh
+      - name: Prepare FBNeo
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          fbneo_dir="$(pwd)/../FBNeo"
+          git clone --filter=blob:none https://github.com/finalburnneo/FBNeo.git "$fbneo_dir"
+          git -C "$fbneo_dir" checkout eab65d11
+          echo "FBNEO_DIR=$(cygpath -m "$fbneo_dir")" >> "$GITHUB_ENV"
       # n02 Kaillera client is now compiled as a static library (Source/n02/)
       # No need to download kailleraclient.dll
       - name: Build RMG (Portable)
@@ -173,6 +191,7 @@ jobs:
           export build_dir="$(pwd)/Build/${{ matrix.configuration }}"
 
           cmake -S "$src_dir" -B "$build_dir" -DCMAKE_BUILD_TYPE="${{ matrix.configuration }}" \
+                -DRMGK_FBNEO_DIR="$FBNEO_DIR" \
                 -DNETPLAY=${{ matrix.features }} \
                 -DVRU=${{ matrix.features }} \
                 -DUSE_ANGRYLION=${{ matrix.features }} \
