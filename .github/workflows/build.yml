@@ -39,7 +39,10 @@ jobs:
           sudo apt-mark hold firefox
 
           sudo apt-get -y update
-          sudo apt-get -y upgrade
+          # Do not upgrade the whole system: the ubuntu-24.04-arm runners can
+          # have a stale mirror index whose nginx package 404s during upgrade,
+          # failing the job before any of our code is built. Only install the
+          # dependencies we actually need.
           sudo apt-get -y install cmake libusb-1.0-0-dev libhidapi-dev libsamplerate0-dev libspeex-dev libminizip-dev libfreetype6-dev \
             libgl1-mesa-dev libglu1-mesa-dev pkg-config zlib1g-dev binutils-dev libspeexdsp-dev qt6-base-dev qt6-tools-dev qt6-translations-l10n libqt6svg6-dev libqt6websockets6-dev libvulkan-dev \
             build-essential nasm git zip appstream xvfb qt6ct mesa-vulkan-drivers meson
