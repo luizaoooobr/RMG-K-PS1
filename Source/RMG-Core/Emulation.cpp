@@ -1194,6 +1194,43 @@ static std::filesystem::path libretro_save_directory(
     return (CoreGetSaveDirectory() / name).make_preferred();
 }
 
+// parallel-dc boots NAOMI and Dreamcast content with a built-in HLE BIOS when
+// no real one is available, but Atomiswave (and System SP) refuse to start
+// without their BIOS: retro_load_game() fails and the frontend only sees
+// "core refused the content". A network session points the core at an isolated
+// system directory, so seed it with the read-only BIOS archives from the
+// regular directory. VMUs/EEPROMs are save-like state and stay isolated in
+// saveDir -- nothing that can differ between peers is copied.
+static void seed_isolated_libretro_bios(const std::filesystem::path& regularSystemDir,
+                                        const std::filesystem::path& isolatedSystemDir)
+{
+    // parallel-dc looks up BIOS archives under <system directory>/dc/
+    const std::filesystem::path source = regularSystemDir / "dc";
+    const std::filesystem::path target = isolatedSystemDir / "dc";
+
+    std::error_code ec;
+    if (!std::filesystem::is_directory(source, ec))
+    {
+        return;
+    }
+    std::filesystem::create_directories(target, ec);
+    ec.clear();
+
+    for (std::filesystem::directory_iterator it(source, ec), end;
+         !ec && it != end; it.increment(ec))
+    {
+        const std::filesystem::path& from = it->path();
+        if (!std::filesystem::is_regular_file(from, ec))
+        {
+            ec.clear();
+            continue;
+        }
+        std::filesystem::copy_file(from, target / from.filename(),
+            std::filesystem::copy_options::overwrite_existing, ec);
+        ec.clear();
+    }
+}
+
 // Boots the libretro core for `rom`. Leaves the rollback surface pointed at the
 // libretro runtime and sizes the GekkoNet state ring from the core's own
 // serializer, so nothing downstream needs to know which emulator is loaded.
@@ -1223,6 +1260,10 @@ static bool libretro_start_runtime(const std::filesystem::path& rom,
     std::error_code ec;
     std::filesystem::create_directories(systemDir, ec);
     std::filesystem::create_directories(saveDir, ec);
+    if (isolated)
+    {
+        seed_isolated_libretro_bios(libretro_system_directory(system, false), systemDir);
+    }
 
     // Every libretro session is a rollback session: pin machine-local values
     // before the core boots so both peers start bit-identical.
