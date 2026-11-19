@@ -5,6 +5,7 @@ CpsPalUpdateCallback CpsPalUpdateCallbackFunction = NULL;
 
 // CPS (palette)
 
+static bool CpsXmvPaletteRestored = false;	// xmvsf3v3: CpsPalVisualScan() restored CpsPal
 static UINT8* CpsPalSrc = NULL;			// Copy of current input palette
 UINT32* CpsPal = NULL;					// Hicolor version of palette
 INT32 nCpsPalCtrlReg;
@@ -30,6 +31,7 @@ INT32 CpsPalInit()
 	// start deterministically (malloc contents differ between two instances and
 	// would make their first saved states differ).
 	if (Cps == 2) memset(CpsPal, 0, nLen);
+	CpsXmvPaletteRestored = false;
 
 	return 0;
 }
@@ -38,7 +40,6 @@ INT32 CpsPalExit()
 {
 	BurnFree(CpsPal);
 	BurnFree(CpsPalSrc);
-	CpsPalUpdateCallbackFunction = NULL;
 	return 0;
 }
 
@@ -57,7 +58,6 @@ INT32 CpsPalUpdate(UINT8* pNewPal)
 	
 	for (INT32 nPage = 0; nPage < 6; nPage++) {
 		if (BIT(nCtrl, nPage)) {
-			if (CpsPalUpdateCallbackFunction) CpsPalUpdateCallbackFunction(nPage, PaletteRAM);
 			for (INT32 Offset = 0; Offset < 0x200; ++Offset) {
 				INT32 Palette = BURN_ENDIAN_SWAP_INT16(*(PaletteRAM++));
 				INT32 r, g, b, Bright;
@@ -85,7 +85,7 @@ INT32 CpsPalUpdate(UINT8* pNewPal)
 // Originally scanned only for xmvsf3v3 (gated on CpsXmvSixEnabled), but every CPS-2 title
 // restores a rollback savestate with a stale latched palette otherwise and diverges visually
 // from the replayed simulation (CPS-2 double-buffers sprites and latches registers per raster).
-INT32 CpsPalStateScan(INT32 nAction)
+INT32 CpsPalVisualScan(INT32 nAction)
 {
 	if (Cps != 2 || !(nAction & ACB_DRIVER_DATA)) return 0;
 
@@ -94,7 +94,18 @@ INT32 CpsPalStateScan(INT32 nAction)
 	ba.Data = CpsPalSrc;	ba.nLen = 0xc00 * sizeof(UINT16);	ba.szName = "CPS-2 palette DMA input";	BurnAcb(&ba);
 	ba.Data = CpsPal;		ba.nLen = 0xc00 * sizeof(UINT32);	ba.szName = "CPS-2 effective palette";	BurnAcb(&ba);
 
+	if (nAction & ACB_WRITE) CpsXmvPaletteRestored = true;
+
 	return 0;
+}
+
+INT32 CpsPalConsumeRestoredCache()
+{
+	if (Cps != 2 || !CpsXmvPaletteRestored) return 0;
+
+	CpsXmvPaletteRestored = false;
+
+	return 1;
 }
 
 static inline UINT32 CpsPalColor(UINT16 nRaw)

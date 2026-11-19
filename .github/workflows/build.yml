@@ -64,7 +64,7 @@ jobs:
         run: |
           fbneo_dir="$(pwd)/../FBNeo"
           git clone --filter=blob:none https://github.com/finalburnneo/FBNeo.git "$fbneo_dir"
-          git -C "$fbneo_dir" checkout ce7cac339
+          git -C "$fbneo_dir" checkout eab65d11
           echo "FBNEO_DIR=$fbneo_dir" >> $GITHUB_ENV
         shell: bash
       - name: Build SDL3
@@ -203,7 +203,7 @@ jobs:
           set -euo pipefail
           fbneo_dir="$(pwd)/../FBNeo"
           git clone --filter=blob:none https://github.com/finalburnneo/FBNeo.git "$fbneo_dir"
-          git -C "$fbneo_dir" checkout ce7cac339
+          git -C "$fbneo_dir" checkout eab65d11
           echo "FBNEO_DIR=$(cygpath -m "$fbneo_dir")" >> "$GITHUB_ENV"
       # n02 Kaillera client is now compiled as a static library (Source/n02/)
       # No need to download kailleraclient.dll

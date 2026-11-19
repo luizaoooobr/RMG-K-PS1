@@ -1,4 +1,4 @@
-﻿// Burn - Drivers module
+// Burn - Drivers module
 
 #include "version.h"
 #include "burnint.h"
@@ -2050,13 +2050,10 @@ void BurnRumble(INT32 nPlayer, INT32 nStrong, INT32 nWeak)
 {
 	(void)nPlayer; (void)nStrong; (void)nWeak;
 }
+
 // RMG-K: read-only driver table access for the host's content-based ROM lookup.
-//
-// The public BurnDrv* helpers resolve everything through the global
-// nBurnDrvActive, so enumerating the table from the host (to map a ROM's CRC32
-// to its driver) would make a game that is running on another thread execute
-// another driver's frame. These accessors read the table in place and never
-// touch the active driver.
+// The public BurnDrv* helpers resolve everything through nBurnDrvActive; using
+// them while a game runs on another thread would switch the active driver.
 extern "C" INT32 RmgkDriverCount()
 {
 	return (INT32)nBurnDrvCount;
@@ -2086,7 +2083,6 @@ extern "C" INT32 RmgkDriverFlags(INT32 i)
 	return pDriver[i]->Flags;
 }
 
-// Copy ROM entry n of driver i. Returns 0 when the entry does not exist.
 extern "C" INT32 RmgkDriverRomInfo(INT32 i, UINT32 n, UINT32* pCrc, UINT32* pLen, UINT32* pType)
 {
 	if (i < 0 || (UINT32)i >= nBurnDrvCount) return 0;
