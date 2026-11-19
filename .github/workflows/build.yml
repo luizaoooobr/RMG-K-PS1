@@ -27,6 +27,9 @@ jobs:
       - uses: hendrikmuhs/ccache-action@v1.2
         with:
           key: linux-${{ matrix.architecture }}-${{ matrix.features }}-${{ matrix.configuration }}
+          # The GitHub-hosted Ubuntu images can have a stale apt index; without
+          # this the action's own "apt-get install ccache" fails with exit 100.
+          update-package-index: true
       - name: Install Packages
         run: |
           # remove and disable snap, this fixes long update times
