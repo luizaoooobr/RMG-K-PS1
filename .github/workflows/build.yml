@@ -288,6 +288,20 @@ jobs:
             cd ../..
           fi
 
+          # Publish the pinned libretro cores from the Windows portable as
+          # standalone assets too, mirroring the Linux .so assets. They are
+          # already inside the portable zip above, but keeping them separate
+          # makes each revision easy to find and verify by hash.
+          win_cores="artifacts/RMG-K-Portable-Windows64-${{ env.VERSION }}/Core/cores"
+          if [ -d "$win_cores" ]; then
+            for core in parallel_dc swanstation; do
+              cp "$win_cores/${core}_libretro.dll" \
+                "release/${core}_libretro-${{ env.VERSION }}-win64.dll"
+            done
+          else
+            echo "Windows core directory not found: $win_cores" >&2
+          fi
+
           # Copy Windows installer
           find artifacts -name "RMG-K-Setup*.exe" -exec cp {} release/ \;
 
