@@ -171,12 +171,12 @@ Pinned reference builds published with `vdev-9999`:
 
 | Artifact | Size | SHA-256 |
 | --- | --- | --- |
-| `parallel_dc_libretro-vdev-9999-linux64.so` | 33,894,256 | `d2853b54774e240c1599ad1a33d0404f3c806335e1eb6a4e45c6541a2c8236c5` |
-| Windows `parallel_dc_libretro.dll` (inside the zip) | 14,433,780 | `f7e2e50859eb45fbb3171425485d866b58ea8a89406b74f69297e70e8369eb50` |
+| `parallel_dc_libretro-vdev-9999-linux64.so` | 33,894,256 | `d60cdb59d35d90550010219ceeef130669f7247c67a2d011323acefdbdeb98aa` |
+| Windows `parallel_dc_libretro.dll` (inside the zip) | 14,433,780 | `b33bf56f8ec2542c541860b3e46c3da70666071b1658c315d4892f497f771971` |
 
 A ROM-backed determinism check still has to be done with a real Dreamcast,
 NAOMI or Atomiswave dump inside RMG-K: boot the same content on Windows and
 Linux, serialize the first frames through the rollback layer and compare the
 checksums. A mismatch means the two sides used different core revisions, one of
-the pinned options was overridden, or a non-isolated save directory leaked into
-a synchronized session.
+the pinned options was overridden, a non-isolated save directory leaked into a
+synchronized session, or `RMGK_DETERMINISTIC_RTC=1` was not set on both peers.
