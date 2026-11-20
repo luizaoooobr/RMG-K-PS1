@@ -1215,23 +1215,25 @@ bool Initialize(const char* corePath, const char* gamePath, const char* systemDi
         {
             // Network session only: offline keeps the user's normal BIOS setup.
             //
-            // parallel-dc defaults to use_real_bios=enabled. The Windows
-            // portable ships naomi.zip under Data/naomi/system/dc, but the
-            // Linux AppImage ships no BIOS at all. The two peers therefore
-            // boot different machines (real BIOS vs HLE/reios) with different
-            // initial state and audio -- a desync on frame 0, before any
-            // input. "Default" region is not neutral either: it becomes 3,
-            // which matches no NAOMI BIOS blob and makes the core pick one by
-            // zip order. Force HLE + a fixed region so the boot state is
-            // derived from the game header on both sides, not from files that
-            // happen to exist on each host.
+            // parallel-dc defaults to use_real_bios=enabled, and the isolated
+            // system directory is seeded from each peer's regular BIOS folder.
+            // A host that has dc_boot.bin/naomi.zip therefore boots a real BIOS
+            // while a host without them boots HLE/reios: different machines,
+            // different initial state and audio, desync on frame 0 before any
+            // input. Force HLE for Dreamcast and NAOMI so both peers derive the
+            // boot state from the game header, not from files that happen to
+            // exist on each host.
             //
-            // Atomiswave is unaffected: the core requires awbios.zip even
-            // with this option off (naomi_cart.c skips the BIOS only for
-            // non-AW cards), and the value is read before the core hides it.
-            if (g_system == System::Naomi)
+            // NAOMI also needs a fixed region: "Default" becomes 3, matching no
+            // NAOMI BIOS blob, so the core used to pick one by zip order.
+            // Atomiswave is left untouched: the core requires awbios.zip even
+            // with real BIOS disabled, so it keeps its own BIOS setup.
+            if (g_system == System::Dreamcast || g_system == System::Naomi)
             {
                 SetOptionOverride("reicast_use_real_bios", "disabled");
+            }
+            if (g_system == System::Naomi)
+            {
                 SetOptionOverride("reicast_region", "Japan");
             }
         }

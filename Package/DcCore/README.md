@@ -48,6 +48,14 @@ ARM7 recompiler:
 - `reicast_threaded_rendering=disabled`
 - `reicast_arm7_recompiler=disabled`
 
+Dreamcast and NAOMI additionally boot from the built-in HLE BIOS so a peer with
+a real BIOS in its system directory cannot diverge from one without it:
+
+- `reicast_use_real_bios=disabled` (Dreamcast, NAOMI)
+
+NAOMI also pins `reicast_region=Japan`. Atomiswave keeps its own BIOS setup
+because the core requires `awbios.zip` regardless.
+
 Network sessions use throw-away directories under
 `CoreGetUserDataDirectory()/netplay/<system>/{system,save}`; offline sessions
 continue to use the normal VMU/save directories.
