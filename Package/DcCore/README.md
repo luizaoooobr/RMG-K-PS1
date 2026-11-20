@@ -172,7 +172,7 @@ Pinned reference builds published with `vdev-9999`:
 | Artifact | Size | SHA-256 |
 | --- | --- | --- |
 | `parallel_dc_libretro-vdev-9999-linux64.so` | 33,894,256 | `d60cdb59d35d90550010219ceeef130669f7247c67a2d011323acefdbdeb98aa` |
-| Windows `parallel_dc_libretro.dll` (inside the zip) | 14,433,780 | `b33bf56f8ec2542c541860b3e46c3da70666071b1658c315d4892f497f771971` |
+| Windows `parallel_dc_libretro.dll` (inside the zip) | 14,713,470 | `929aa2a747e48789f0cb22e310bc2441afdd2158b4fb473dfb87edf345e40bca` |
 
 A ROM-backed determinism check still has to be done with a real Dreamcast,
 NAOMI or Atomiswave dump inside RMG-K: boot the same content on Windows and
