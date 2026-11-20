@@ -28,11 +28,18 @@ out_dir="${1:-$script_dir}"
 jobs="${JOBS:-$(nproc 2>/dev/null || echo 4)}"
 core_name="parallel_dc_libretro.dll"
 
+# PE headers and __DATE__/__TIME__ would otherwise change the hash on every
+# build even when the sources are identical. Pin both so the standalone asset,
+# the portable build and the README reference stay reproducible.
+export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-946684800}"
+
 if [[ -d /ucrt64/bin ]]
 then
 	export MSYSTEM=UCRT64
 	export PATH="/ucrt64/bin:$PATH"
 fi
+
+linker="$(command -v g++) -Wl,--no-insert-timestamp"
 
 for tool in git make g++ sha256sum
 do
@@ -69,7 +76,8 @@ git -C "$src_dir" apply --ignore-whitespace "$patch_file"
 echo "==> building Windows core ($jobs jobs)"
 make -C "$src_dir" clean >/dev/null 2>&1 || true
 make -C "$src_dir" -j"$jobs" platform=win64 \
-	HAVE_VULKAN=0 HAVE_D3D11=0 HAVE_D3D12=0 HAVE_D3D9=0
+	HAVE_VULKAN=0 HAVE_D3D11=0 HAVE_D3D12=0 HAVE_D3D9=0 \
+	LD="$linker"
 
 mkdir -p "$out_dir"
 cp -f "$src_dir/$core_name" "$out_dir/$core_name"
