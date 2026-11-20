@@ -1,0 +1,4 @@
+# Patches must keep LF endings on every checkout. `git apply` cannot handle a
+# CRLF patch against sources checked out with a different eol convention.
+*.patch text eol=lf
+*.sh text eol=lf

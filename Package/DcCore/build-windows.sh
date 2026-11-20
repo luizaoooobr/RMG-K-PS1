@@ -63,8 +63,8 @@ git -C "$src_dir" reset --hard "$revision"
 git -C "$src_dir" clean -fdx
 
 echo "==> applying $patch_file"
-git -C "$src_dir" apply --check "$patch_file"
-git -C "$src_dir" apply "$patch_file"
+git -C "$src_dir" apply --check --ignore-whitespace "$patch_file"
+git -C "$src_dir" apply --ignore-whitespace "$patch_file"
 
 echo "==> building Windows core ($jobs jobs)"
 make -C "$src_dir" clean >/dev/null 2>&1 || true
