@@ -1,5 +1,40 @@
+diff --git a/core/hw/aica/aica_if.c b/core/hw/aica/aica_if.c
+index 8f3e0564..355c45d4 100644
+--- a/core/hw/aica/aica_if.c
++++ b/core/hw/aica/aica_if.c
+@@ -11,6 +11,7 @@
+ #include "hw/sh4/sh4_sched.h"
+ #include "hw/sh4/dyna/blockmanager.h"
+ 
++#include <stdlib.h>
+ #include <time.h>
+ 
+ VArray2 aica_ram;
+@@ -27,6 +28,22 @@ int rtc_schid = -1;
+ 
+ u32 GetRTC_now(void)
+ {
++	/* RMG-K netplay: when both peers run a synchronized session, RMG-K sets
++	 * RMGK_DETERMINISTIC_RTC=1. Host local time (including time zone and DST)
++	 * then has to disappear from the machine state: it is written to flash,
++	 * used to generate the console ID when the flash is empty, and copied into
++	 * HLE BIOS RAM. Content that reads the clock later in a match (KOF98) would
++	 * otherwise produce different audio on peers in different time zones.
++	 * Offline sessions leave the variable unset and keep the upstream clock. */
++	const char* rmgk_deterministic_rtc = getenv("RMGK_DETERMINISTIC_RTC");
++	if (rmgk_deterministic_rtc != NULL && rmgk_deterministic_rtc[0] == '1'
++			&& rmgk_deterministic_rtc[1] == '\0')
++	{
++		/* 2000-01-01 00:00:00 on the DC clock: 20 years and 5 leap days
++		 * after the 1950 epoch used by the Dreamcast RTC. */
++		return (20 * 365 + 5) * 24 * 60 * 60;
++	}
++
+ 	/* The Dreamcast Epoch time is 1/1/50 00:00 but without support for time zone or DST. */
+ 	/* We compute the TZ/DST current time offset and add it to the result */
+ 	/* as if we were in the UTC time zone (as well as the DC Epoch) */
 diff --git a/core/libretro/libretro.cpp b/core/libretro/libretro.cpp
-index dd35da3..33a6cd7 100644
+index dd35da37..33a6cd7e 100644
 --- a/core/libretro/libretro.cpp
 +++ b/core/libretro/libretro.cpp
 @@ -1,7 +1,11 @@

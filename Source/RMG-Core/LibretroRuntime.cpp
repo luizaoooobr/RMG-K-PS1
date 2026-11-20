@@ -1880,6 +1880,19 @@ void SetNetgameMode(bool netgame)
 void SetMemoryCardDisabled(bool disabled)
 {
     g_memoryCardDisabled = disabled;
+
+    // A synchronized session must not derive the emulated Dreamcast RTC from
+    // the host clock: the local time zone/DST is written to flash, used for the
+    // console ID when the flash is empty, and copied into HLE BIOS RAM. Peers in
+    // different time zones then boot different machines and content that reads
+    // the clock later in a match (KOF98) produces different audio. parallel-dc
+    // reads this variable in GetRTC_now(); offline sessions get "0" and keep
+    // the core's original RTC behavior.
+#ifdef _WIN32
+    _putenv_s("RMGK_DETERMINISTIC_RTC", disabled ? "1" : "0");
+#else
+    setenv("RMGK_DETERMINISTIC_RTC", disabled ? "1" : "0", 1);
+#endif
 }
 
 const VideoFrame& GetVideoFrame()

@@ -28,8 +28,17 @@ has a versioned serializer. The only build fix needed in this embedding is in
   even when optional renderers are disabled, and some configurations reached it
   only through transitive includes.
 
-No emulator logic is patched, so the core keeps upstream state compatibility
-for the pinned revision.
+The patch also makes the emulated Dreamcast RTC deterministic in
+`core/hw/aica/aica_if.c`, but only when the frontend sets
+`RMGK_DETERMINISTIC_RTC=1` (synchronized sessions). Upstream seeds
+`RealTimeClock` from the host's local time (including its time zone and DST);
+that value is written to the flash user settings, used to generate the console ID
+when the flash is empty, and copied into HLE BIOS RAM. Two peers in different
+time zones therefore boot different machines, and content that reads the clock
+later in a match produces different audio. In netplay, RMG-K now returns the
+fixed DC epoch (2000-01-01 00:00:00) instead. Offline sessions leave the
+variable unset/`0` and keep the original host-clock behavior; savestate layout
+is unchanged.
 
 ## Determinism settings pinned by RMG-K
 
