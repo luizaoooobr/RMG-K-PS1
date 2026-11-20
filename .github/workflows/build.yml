@@ -117,7 +117,7 @@ jobs:
           base="https://github.com/${{ github.repository }}/releases/download/$CORES_TAG"
           curl -fL "$base/swanstation_libretro-$CORES_TAG-linux64.so" \
             -o Package/PsxCore/swanstation_libretro.so
-          Package/DcCore/build-linux.sh "$(pwd)/Package/DcCore"
+          bash Package/DcCore/build-linux.sh "$(pwd)/Package/DcCore"
           ls -l Package/PsxCore/swanstation_libretro.so Package/DcCore/parallel_dc_libretro.so
         shell: bash
       - name: Create AppImage
