@@ -236,17 +236,16 @@ jobs:
           CORES_TAG: vdev-9999
         shell: msys2 {0}
         run: |
-          # Same pinned-core strategy as the Linux job: reuse the binaries
-          # already published on vdev-9999 so the portable zip, installer and
-          # release assets all carry the exact tested Windows cores.
+          # The PS1 core stays pinned on vdev-9999. The Dreamcast core is built
+          # from this checkout's pinned revision and patch so the Windows
+          # portable, installer and standalone asset cannot drift from Linux.
           set -euo pipefail
           base="https://github.com/${{ github.repository }}/releases/download/$CORES_TAG"
           out_dir="$(pwd)/Bin/${{ matrix.configuration }}/Core/cores"
           mkdir -p "$out_dir"
-          curl -fL "$base/parallel_dc_libretro-$CORES_TAG-win64.dll" \
-            -o "$out_dir/parallel_dc_libretro.dll"
           curl -fL "$base/swanstation_libretro-$CORES_TAG-win64.dll" \
             -o "$out_dir/swanstation_libretro.dll"
+          bash Package/DcCore/build-windows.sh "$out_dir"
           sha256sum "$out_dir"/*.dll
       - name: Create Installer
         if: ${{ matrix.features == 'ON' && matrix.configuration == 'Release' }}
@@ -261,6 +260,12 @@ jobs:
         with:
           name: RMG-K-Portable-Windows64-${{ env.GIT_REVISION }}
           path: Bin/Release/*
+      - name: Upload patched DC core (Windows)
+        if: ${{ matrix.features == 'ON' && matrix.configuration == 'Release' }}
+        uses: actions/upload-artifact@v5
+        with:
+          name: parallel_dc_libretro-${{ env.GIT_REVISION }}-win64
+          path: Bin/Release/Core/cores/parallel_dc_libretro.dll
       - name: Upload RMG (Installer)
         if: ${{ matrix.features == 'ON' && matrix.configuration == 'Release' }}
         uses: actions/upload-artifact@v5
@@ -291,6 +296,15 @@ jobs:
 
           # Find and move Linux AppImage
           find artifacts -name "*.AppImage" -exec cp {} release/ \;
+
+          # Publish the Linux DC core built from this checkout, so the standalone
+          # asset matches the core embedded in the AppImage.
+          linux_core="$(find artifacts -type f -path '*parallel_dc_libretro-*-linux64/parallel_dc_libretro.so' | head -n 1)"
+          if [ -n "$linux_core" ]; then
+            cp "$linux_core" "release/parallel_dc_libretro-${{ env.VERSION }}-linux64.so"
+          else
+            echo "Linux DC core artifact not found" >&2
+          fi
 
           # Zip Windows portable build. Machine-local state and user content must
           # never ship in a release: Config/Cache hold per-user settings, roms and
