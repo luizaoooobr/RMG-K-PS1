@@ -121,7 +121,9 @@ gamepad connected; rows never configured keep the default keyboard keys.
 
 `build-linux.sh` resets a checkout to the pinned revision, applies the patch and
 builds `parallel_dc_libretro.so` with `platform=unix` and the optional GPU
-renderers disabled.
+renderers disabled. The `ubuntu-24.04` Release job in `.github/workflows/build.yml`
+calls it before creating the AppImage, so the shipped Linux core is built from
+this checkout instead of being downloaded from an older release.
 
 The RMG-K Linux builds happen in the `rmg-builder:latest` Docker image. From an
 MSYS2 shell on Windows, mount the checkout and run the script inside it:

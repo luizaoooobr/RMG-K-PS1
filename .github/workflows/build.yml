@@ -111,14 +111,13 @@ jobs:
           CORES_TAG: vdev-9999
         run: |
           # Create.sh bundles the patched cores in the AppImage so netplay stays
-          # deterministic. They are not checked in (see Package/*Core/.gitignore),
-          # so reuse the pinned binaries already published on the vdev-9999
-          # release instead of rebuilding a third-party core on every job.
+          # deterministic. The PS1 core is pinned on the vdev-9999 release; the
+          # Dreamcast core is built here from this checkout's pinned revision and
+          # patch, so the Linux binary always matches the source being released.
           base="https://github.com/${{ github.repository }}/releases/download/$CORES_TAG"
           curl -fL "$base/swanstation_libretro-$CORES_TAG-linux64.so" \
             -o Package/PsxCore/swanstation_libretro.so
-          curl -fL "$base/parallel_dc_libretro-$CORES_TAG-linux64.so" \
-            -o Package/DcCore/parallel_dc_libretro.so
+          Package/DcCore/build-linux.sh "$(pwd)/Package/DcCore"
           ls -l Package/PsxCore/swanstation_libretro.so Package/DcCore/parallel_dc_libretro.so
         shell: bash
       - name: Create AppImage
@@ -132,6 +131,12 @@ jobs:
         with:
           name: RMG-K-Portable-Linux64-${{ env.GIT_REVISION }}
           path: Bin/*.AppImage
+      - name: Upload patched DC core (Linux)
+        if: ${{ matrix.features == 'ON' && matrix.architecture == 'x86_64' && matrix.configuration == 'Release' }}
+        uses: actions/upload-artifact@v5
+        with:
+          name: parallel_dc_libretro-${{ env.GIT_REVISION }}-linux64
+          path: Package/DcCore/parallel_dc_libretro.so
 
   build-windows:
     runs-on: windows-2025
