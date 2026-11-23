@@ -1070,6 +1070,15 @@ void shutdown_unlocked()
     g_initialized  = false;
     g_gameLoaded   = false;
     g_shutdownFlag = false;
+
+    // Do not leak this core's nominal rate into a later FBNeo/N64 session in
+    // the same process; those paths either publish their own rate or use 60.
+#ifdef _WIN32
+    _putenv_s("RMGK_ROLLBACK_PRESENT_HZ_EFFECTIVE", "");
+#else
+    unsetenv("RMGK_ROLLBACK_PRESENT_HZ_EFFECTIVE");
+#endif
+
     g_audio.clear();
     g_videoBuffer.clear();
     g_videoFrame = libretro_rt::VideoFrame();
@@ -1366,6 +1375,18 @@ bool Initialize(const char* corePath, const char* gamePath, const char* systemDi
     {
         g_fps = av.timing.fps;
     }
+
+    // The rollback pacer defaults to 60 Hz. Publish the core's nominal rate so
+    // the libretro path uses the same effective-HZ contract as Mupen; without
+    // this, a 59.94 Hz PS1 title drifts against the presentation grid.
+    // An explicit RMGK_ROLLBACK_PRESENT_HZ still wins in rmgk_gekko.cpp.
+    char presentHz[64];
+    std::snprintf(presentHz, sizeof(presentHz), "%.12f", g_fps);
+#ifdef _WIN32
+    _putenv_s("RMGK_ROLLBACK_PRESENT_HZ_EFFECTIVE", presentHz);
+#else
+    setenv("RMGK_ROLLBACK_PRESENT_HZ_EFFECTIVE", presentHz, 1);
+#endif
     if (av.geometry.base_width > 0 && av.geometry.base_height > 0 &&
         g_videoFrame.width == 0)
     {
@@ -1781,16 +1802,33 @@ bool RunFrame(int flags)
     }
 
     apply_latched_input();
-    reset_audio();
+
+    // Hidden frames from GekkoNet re-simulation pass CoreFrameOutput_None.
+    // Their audio is discarded by the next visible reset_audio(), so hashing it
+    // only wastes CPU inside the 16.7 ms frame budget. The healthcheck digest
+    // is consumed by visible_frame_complete(), which always follows a visible
+    // RunFrame(Output_Video | Output_Audio).
+    const bool visibleAudio = (flags & Output_Audio) != 0;
+    if (visibleAudio)
+    {
+        reset_audio();
+    }
 
     const auto begin = clock_::now();
     p_retro_run();
     g_stats = {};
     g_stats.total_us = static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::microseconds>(clock_::now() - begin).count());
-    g_frameChecksum = fnv1a64_lanes(
-        reinterpret_cast<const unsigned char*>(g_audio.data()),
-        g_audio.size() * sizeof(int16_t));
+    if (visibleAudio)
+    {
+        g_frameChecksum = fnv1a64_lanes(
+            reinterpret_cast<const unsigned char*>(g_audio.data()),
+            g_audio.size() * sizeof(int16_t));
+    }
+    else
+    {
+        g_frameChecksum = 0;
+    }
 
     if (g_shutdownFlag)
     {
