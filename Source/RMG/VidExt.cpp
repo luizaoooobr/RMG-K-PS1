@@ -566,7 +566,8 @@ static QVector<const char*> l_VulkanExtensionList;
 
 static void VidExt_UpdateOsdDisplaySize(void)
 {
-    if (l_RenderMode != M64P_RENDER_OPENGL || !l_OsdInitialized || l_OGLWidget == nullptr)
+    if (l_RenderMode != M64P_RENDER_OPENGL || !l_OsdInitialized ||
+        l_OGLWidget == nullptr || *l_OGLWidget == nullptr)
     {
         return;
     }
@@ -814,6 +815,40 @@ static m64p_error VidExt_SetModeWithRate(int Width, int Height, int RefreshRate,
     return M64ERR_UNSUPPORTED;
 }
 
+// LRPS2 resolves OpenGL entry points while booting, before the first
+// retro_video_refresh() would bring the shared presenter up. The old code
+// dereferenced *l_OGLWidget there and crashed with a null-pointer read when a
+// PS2 game (e.g. Street Fighter EX 3) called the libretro GL hook early. Bring
+// the context up on demand instead. N64 and FBNeo already initialize VidExt
+// before they ask for GL symbols, so they never enter this path.
+static bool VidExt_EnsureLibretroGlReady(void)
+{
+    if (l_OGLWidget == nullptr)
+    {
+        return false;
+    }
+    if (*l_OGLWidget != nullptr)
+    {
+        return true;
+    }
+
+    static bool inProgress = false;
+    if (inProgress)
+    {
+        return false;
+    }
+    inProgress = true;
+
+    const bool ready =
+        VidExt_InitWithRenderMode(M64P_RENDER_OPENGL) == M64ERR_SUCCESS &&
+        VidExt_SetMode(640, 480, 32, M64VIDEO_WINDOWED, 0) == M64ERR_SUCCESS &&
+        l_OGLWidget != nullptr && *l_OGLWidget != nullptr &&
+        (*l_OGLWidget)->GetContext() != nullptr;
+
+    inProgress = false;
+    return ready;
+}
+
 static m64p_function VidExt_GLGetProc(const char *Proc)
 {
     if (l_RenderMode != M64P_RENDER_OPENGL)
@@ -828,7 +863,17 @@ static m64p_function VidExt_GLGetProc(const char *Proc)
     }
 #endif
 
-    return (*l_OGLWidget)->GetContext()->getProcAddress(Proc);
+    if (!VidExt_EnsureLibretroGlReady())
+    {
+        return nullptr;
+    }
+
+    QOpenGLContext* context = (*l_OGLWidget)->GetContext();
+    if (context == nullptr)
+    {
+        return nullptr;
+    }
+    return context->getProcAddress(Proc);
 }
 
 // Adapts the m64p VidExt function resolver to the plain void* hook the libretro
@@ -3273,7 +3318,17 @@ static uint32_t VidExt_GLGetDefaultFramebuffer(void)
     }
 #endif
 
-    return (*l_OGLWidget)->GetContext()->defaultFramebufferObject();
+    if (!VidExt_EnsureLibretroGlReady())
+    {
+        return 0;
+    }
+
+    QOpenGLContext* context = (*l_OGLWidget)->GetContext();
+    if (context == nullptr)
+    {
+        return 0;
+    }
+    return context->defaultFramebufferObject();
 }
 
 static m64p_error VidExt_VK_GetSurface(void** Surface, void* Instance)
