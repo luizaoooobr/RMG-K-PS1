@@ -1311,6 +1311,43 @@ static bool libretro_start_runtime(const std::filesystem::path& rom,
         return false;
     }
 
+    // LRPS2 can expose a serialize size before its savestate serializer is
+    // actually usable (libretro's RETRO_SERIALIZATION_QUIRK_MUST_INITIALIZE).
+    // GekkoNet asks for the frame-0 anchor before the first emulated frame, so
+    // prove serialization here and step the core with neutral input until it
+    // works. Both peers execute the same deterministic number of steps, so the
+    // anchor they capture still matches. Other libretro cores already serialize
+    // successfully at this point and skip the loop entirely.
+    if (system == libretro_rt::System::Ps2)
+    {
+        const int probeSize = libretro_rt::SerializeSize();
+        if (probeSize > 0)
+        {
+            std::vector<unsigned char> probe(static_cast<std::size_t>(probeSize));
+            int probeLen = 0;
+            int probeChecksum = 0;
+            bool probeOk = false;
+            for (int attempt = 0; attempt < 120; ++attempt)
+            {
+                if (libretro_rt::SaveStateInto(probe.data(), probeSize,
+                        probeLen, probeChecksum, 0))
+                {
+                    probeOk = true;
+                    break;
+                }
+                CoreSetError(std::string());
+                if (!libretro_rt::RunFrame(libretro_rt::Output_None))
+                {
+                    break;
+                }
+            }
+            if (probeOk)
+            {
+                CoreSetError(std::string());
+            }
+        }
+    }
+
     const int stateSize = libretro_rt::SerializeSize();
     if (stateSize <= 0)
     {

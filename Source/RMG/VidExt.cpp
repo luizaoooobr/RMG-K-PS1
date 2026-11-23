@@ -76,6 +76,8 @@ static bool l_OpenGLInitialized                         = false;
 static bool l_OsdInitialized                            = false;
 static QSurfaceFormat l_SurfaceFormat;
 static m64p_render_mode l_RenderMode;
+// Shared by the N64/FBNeo presenter and the on-demand libretro GL setup below.
+static bool s_FbneoPresenterUp = false;
 
 #ifdef _WIN32
 static constexpr int WGL_CONTEXT_MAJOR_VERSION_ARB = 0x2091;
@@ -846,6 +848,13 @@ static bool VidExt_EnsureLibretroGlReady(void)
         (*l_OGLWidget)->GetContext() != nullptr;
 
     inProgress = false;
+
+    if (ready)
+    {
+        // The first libretro frame must not bring a second widget up: the
+        // on-demand path already ran VidExt_Init/VidExt_SetMode.
+        s_FbneoPresenterUp = true;
+    }
     return ready;
 }
 
@@ -1105,7 +1114,6 @@ static m64p_error VidExt_GLSwapBuf(void)
 #define GL_UNPACK_ROW_LENGTH 0x0CF2
 #endif
 
-static bool   s_FbneoPresenterUp = false;
 static bool   s_FbneoPresenterLogged = false;
 static bool   s_FbneoPresenterChecked = false;
 static int    s_FbneoCheckReports = 0;

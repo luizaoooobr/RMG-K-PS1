@@ -83,9 +83,10 @@ class rmgk_gekko
     static constexpr unsigned int kFbneoStateCapacityBytes = 2u * 1024u * 1024u;
     static constexpr unsigned int kMupenStateCapacityBytes = 24u * 1024u * 1024u;
     // Sizes the per-frame rollback state ring for the next session. Values are
-    // clamped to 1..64 MB. CoreStartEmulation picks the per-runtime default
-    // before any session is created; 4-byte (uint32) input sessions are not
-    // assumed to be FBNeo anymore because N64 also uses 4-byte input packets.
+    // clamped to 1..128 MB; PS2/LRPS2 can exceed the old 64 MB ceiling while
+    // lockstep still holds only three buffers. CoreStartEmulation picks the
+    // per-runtime default before any session is created; 4-byte (uint32) input
+    // sessions are not assumed to be FBNeo anymore because N64 uses them too.
     static void set_state_capacity_bytes(unsigned int bytes);
     static unsigned int state_capacity_bytes();
     // n02-style shared transport: adopt an already-bound UDP socket (the

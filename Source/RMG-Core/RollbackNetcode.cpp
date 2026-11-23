@@ -222,7 +222,16 @@ bool CoreRollbackSaveGameStateInto(CoreRollbackState& state, unsigned char* buff
         int checksum = 0;
         if (!runtime_save_state(buffer, capacity, len, checksum, frame, false))
         {
+            // The runtime sets a specific reason (bad size, serializer refused,
+            // core not ready). Keep it instead of hiding it behind the generic
+            // layer name so a startup failure can be diagnosed from the UI alone.
+            const std::string detail = CoreGetError();
             error = "CoreRollbackSaveGameStateInto runtime SaveStateInto Failed";
+            if (!detail.empty() && detail != error)
+            {
+                error += ": ";
+                error += detail;
+            }
             CoreSetError(error);
             return false;
         }
@@ -239,7 +248,13 @@ bool CoreRollbackSaveGameStateInto(CoreRollbackState& state, unsigned char* buff
         int checksum = 0;
         if (!runtime_save_state_alloc(allocBuf, len, checksum, frame, false))
         {
+            const std::string detail = CoreGetError();
             error = "CoreRollbackSaveGameStateInto runtime SaveStateAlloc Failed";
+            if (!detail.empty() && detail != error)
+            {
+                error += ": ";
+                error += detail;
+            }
             CoreSetError(error);
             return false;
         }
@@ -269,7 +284,13 @@ bool CoreRollbackSaveFullStateInto(CoreRollbackState& state, unsigned char* buff
         int checksum = 0;
         if (!runtime_save_state(buffer, capacity, len, checksum, frame, true))
         {
+            const std::string detail = CoreGetError();
             error = "CoreRollbackSaveFullStateInto runtime SaveStateInto Failed";
+            if (!detail.empty() && detail != error)
+            {
+                error += ": ";
+                error += detail;
+            }
             CoreSetError(error);
             return false;
         }
@@ -286,7 +307,13 @@ bool CoreRollbackSaveFullStateInto(CoreRollbackState& state, unsigned char* buff
         int checksum = 0;
         if (!runtime_save_state_alloc(allocBuf, len, checksum, frame, true))
         {
+            const std::string detail = CoreGetError();
             error = "CoreRollbackSaveFullStateInto runtime SaveStateAlloc Failed";
+            if (!detail.empty() && detail != error)
+            {
+                error += ": ";
+                error += detail;
+            }
             CoreSetError(error);
             return false;
         }
