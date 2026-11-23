@@ -154,6 +154,7 @@
     <addaction name="action_Psx_Input"/>
     <addaction name="action_Dc_Input"/>
     <addaction name="action_Naomi_Input"/>
+    <addaction name="action_Ps2_Input"/>
    </widget>
    <widget class="QMenu" name="menuSettings">
     <property name="title">
@@ -502,6 +503,14 @@
    </property>
    <property name="text">
     <string>&amp;Naomi 1 e 2 / Atomiswave Input...</string>
+   </property>
+  </action>
+  <action name="action_Ps2_Input">
+   <property name="icon">
+    <iconset theme="gamepad-line"/>
+   </property>
+   <property name="text">
+    <string>&amp;PlayStation 2 Input...</string>
    </property>
   </action>
   <action name="action_Arcade_Dip">

@@ -386,6 +386,7 @@ inline LibretroInputProfileId libretroInputProfileForSystem(CoreLibretroSystem s
         case CoreLibretroSystem::Dreamcast:  return LibretroInputProfileId::Dreamcast;
         case CoreLibretroSystem::Naomi:      return LibretroInputProfileId::Arcade;
         case CoreLibretroSystem::Atomiswave: return LibretroInputProfileId::Arcade;
+        case CoreLibretroSystem::Ps2:        return LibretroInputProfileId::Psx;
         default:                             return LibretroInputProfileId::Psx;
     }
 }

@@ -95,6 +95,10 @@ void RomSearcherThread::searchDirectory(QString directory)
     filter << "*.ELF";
     filter << "*.LST";
     filter << "*.DAT";
+    // PS2 disc images. IsMediaFile only claims .iso/.cso when the path names
+    // the PS2, so PS1 images without a hint are not picked up by this filter.
+    filter << "*.ISO";
+    filter << "*.CSO";
 
     QDirIterator::IteratorFlag flag = this->recursive ? 
         QDirIterator::Subdirectories : 
@@ -179,8 +183,8 @@ void RomSearcherThread::searchDirectory(QString directory)
             else
             {
                 // Not an N64 rom or an arcade set: it may be content for one of
-                // the libretro cores (PlayStation, Dreamcast, NAOMI or
-                // Atomiswave). Those have no N64 header, so synthesize one from
+                // the libretro cores (PlayStation, PlayStation 2, Dreamcast,
+                // NAOMI or Atomiswave). Those have no N64 header, so synthesize one from
                 // the file name and tag it with the detected machine family.
                 CoreLibretroSystem libretroSystem = CoreLibretroSystem::Psx;
                 std::string libretroName;
@@ -201,7 +205,9 @@ void RomSearcherThread::searchDirectory(QString directory)
                         : (libretroSystem == CoreLibretroSystem::Naomi)
                             ? CoreRomType::Naomi
                             : (libretroSystem == CoreLibretroSystem::Atomiswave)
-                                ? CoreRomType::Atomiswave : CoreRomType::PlayStation;
+                                ? CoreRomType::Atomiswave
+                                : (libretroSystem == CoreLibretroSystem::Ps2)
+                                    ? CoreRomType::PlayStation2 : CoreRomType::PlayStation;
 
                     data.push_back(
                     {

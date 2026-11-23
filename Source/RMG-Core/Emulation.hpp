@@ -49,15 +49,16 @@ void CoreLibretroSetGlHooks(void* (*getProc)(const char* name), uint32_t (*getDe
 void CoreLibretroResolveHwFrame(void);
 
 // libretro session queries/input. CoreIsLibretroSessionActive() reports whether
-// the current session is driven by a libretro core (PlayStation, Dreamcast,
-// NAOMI or Atomiswave). All of them share the same 12-byte-per-player input
-// packet, see LibretroRuntime.hpp for the layout.
+// the current session is driven by a libretro core (PlayStation, PlayStation 2,
+// Dreamcast, NAOMI or Atomiswave). All of them share the same 12-byte-per-player
+// input packet, see LibretroRuntime.hpp for the layout.
 enum class CoreLibretroSystem
 {
     Psx        = 0,
     Dreamcast  = 1,
     Naomi      = 2,
     Atomiswave = 3,
+    Ps2        = 4,
 };
 
 bool CoreIsLibretroSessionActive(void);

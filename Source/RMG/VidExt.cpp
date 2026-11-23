@@ -1708,6 +1708,7 @@ static int libretroPadProfileIndex(CoreLibretroSystem system)
         case CoreLibretroSystem::Dreamcast:  return 1;
         case CoreLibretroSystem::Naomi:      return 2;
         case CoreLibretroSystem::Atomiswave: return 2;
+        case CoreLibretroSystem::Ps2:        return 0; // DualShock2 uses the PSX analog profile
         default:                             return 0;
     }
 }

@@ -127,6 +127,10 @@ void GameSelectDialog::buildTree(void)
         {
             continue;
         }
+        else if ((filterIndex == 7) && (data.type != CoreRomType::PlayStation2))
+        {
+            continue;
+        }
 
         // search filter
         QString name = this->getDisplayName(data);
@@ -262,6 +266,8 @@ void GameSelectDialog::updateInfoPanel(void)
         this->typeLabel->setText(tr("Arcade"));
     else if (data.type == CoreRomType::PlayStation)
         this->typeLabel->setText(tr("PlayStation"));
+    else if (data.type == CoreRomType::PlayStation2)
+        this->typeLabel->setText(tr("PlayStation 2"));
     else if (data.type == CoreRomType::Dreamcast)
         this->typeLabel->setText(tr("Dreamcast"));
     else if (data.type == CoreRomType::Naomi)

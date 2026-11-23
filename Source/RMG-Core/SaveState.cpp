@@ -84,8 +84,10 @@ static bool fbneo_save_state_path(int slot, std::filesystem::path& path)
     return true;
 }
 
-// Path used for PlayStation (libretro) quick save states: <savestate dir>/<stem>.psx.st<slot>.
-// Content identity comes from the loaded .cue/.chd/.pbp/.m3u path.
+// Path used for libretro disc quick save states: <savestate dir>/<stem>.psx.st<slot>
+// for PlayStation and <stem>.ps2.st<slot> for PlayStation 2. The suffix keeps a
+// PS2 ISO with the same stem from overwriting a PS1 save state.
+// Content identity comes from the loaded .cue/.chd/.pbp/.m3u/.iso path.
 static bool libretro_save_state_path(int slot, std::filesystem::path& path)
 {
     if (!libretro_rt::IsInitialized())
@@ -110,7 +112,8 @@ static bool libretro_save_state_path(int slot, std::filesystem::path& path)
 
     std::string fileName = stem;
     str_replace_chars(fileName, ":<>\"/\\|?*", '_');
-    fileName += ".psx.st";
+    fileName += (CoreGetLibretroSystem() == CoreLibretroSystem::Ps2)
+        ? ".ps2.st" : ".psx.st";
     fileName += std::to_string(slot);
 
     path = CoreGetSaveStateDirectory();

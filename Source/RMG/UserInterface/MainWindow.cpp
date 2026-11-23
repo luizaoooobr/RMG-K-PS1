@@ -2914,6 +2914,7 @@ void MainWindow::updateActions(bool inEmulation, bool isPaused)
     this->action_Toolbar_Input->setEnabled(canConfigureInput);
     this->action_Toolbar_ArcadeInput->setEnabled(canConfigureInput);
     this->action_Toolbar_PsxInput->setEnabled(canConfigureInput);
+    this->action_Ps2_Input->setEnabled(canConfigureInput);
     keyBinding = QString::fromStdString(CoreSettingsGetStringValue(SettingsID::KeyBinding_Settings));
     this->action_Settings_Settings->setShortcut(QKeySequence(keyBinding));
 
@@ -3280,6 +3281,7 @@ void MainWindow::connectActionSignals(void)
     connect(this->action_Psx_Input, &QAction::triggered, this, &MainWindow::on_Action_Psx_Input);
     connect(this->action_Dc_Input, &QAction::triggered, this, &MainWindow::on_Action_Dc_Input);
     connect(this->action_Naomi_Input, &QAction::triggered, this, &MainWindow::on_Action_Naomi_Input);
+    connect(this->action_Ps2_Input, &QAction::triggered, this, &MainWindow::on_Action_Ps2_Input);
     connect(this->action_Arcade_Dip, &QAction::triggered, this, &MainWindow::on_Action_Arcade_Dip);
     connect(this->action_Arcade_Test, &QAction::triggered, this, &MainWindow::on_Action_Arcade_Test);
     connect(this->action_Toolbar_Input, &QAction::triggered, this, &MainWindow::on_Action_Settings_Input);
@@ -4608,6 +4610,14 @@ void MainWindow::on_Action_Arcade_Input(void)
 
 void MainWindow::on_Action_Psx_Input(void)
 {
+    Dialog::PsxInputDialog dialog(Dialog::LibretroInputProfileId::Psx, this);
+    dialog.exec();
+}
+
+void MainWindow::on_Action_Ps2_Input(void)
+{
+    // PS2 uses the same DualShock button/analog layout as PS1; both sessions
+    // share the analog PSX input profile and its saved bindings.
     Dialog::PsxInputDialog dialog(Dialog::LibretroInputProfileId::Psx, this);
     dialog.exec();
 }

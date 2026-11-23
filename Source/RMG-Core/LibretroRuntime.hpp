@@ -42,6 +42,7 @@ namespace libretro_rt
         Dreamcast  = 1,
         Naomi      = 2,
         Atomiswave = 3,
+        Ps2        = 4,
     };
 
     // Frame output flags (matches CoreFrameOutputFlags semantics).

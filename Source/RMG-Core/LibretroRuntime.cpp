@@ -21,6 +21,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <map>
 #include <mutex>
 #include <string>
@@ -1097,6 +1098,62 @@ void shutdown_unlocked()
     close_library();
 }
 
+// LRPS2 discovers BIOS images from <systemDir>/pcsx2/bios and, without an
+// explicit option, uses whichever one the folder happens to enumerate first.
+// A synchronized session copies that folder from each peer's regular system
+// directory, so pin the option to one deterministic filename. The bytes are
+// still checked by the state checksum on frame 0: two peers with the same
+// filename but different BIOS contents will desync immediately instead of
+// silently booting different machines.
+static std::string ps2_pinned_bios_name(const char* systemDir)
+{
+    if (systemDir == nullptr || systemDir[0] == '\0')
+    {
+        return std::string();
+    }
+
+    std::error_code ec;
+    const std::filesystem::path dir =
+        std::filesystem::path(systemDir) / "pcsx2" / "bios";
+    if (!std::filesystem::is_directory(dir, ec))
+    {
+        return std::string();
+    }
+
+    std::string best;
+    for (std::filesystem::directory_iterator it(dir, ec), end;
+         !ec && it != end; it.increment(ec))
+    {
+        const std::filesystem::path& from = it->path();
+        if (!std::filesystem::is_regular_file(from, ec))
+        {
+            ec.clear();
+            continue;
+        }
+
+        std::string name = from.filename().string();
+        std::string lower(name);
+        for (char& c : lower)
+        {
+            if (c >= 'A' && c <= 'Z')
+            {
+                c = static_cast<char>(c - 'A' + 'a');
+            }
+        }
+        if (lower.size() < 5 ||
+            (lower.compare(lower.size() - 4, 4, ".bin") != 0 &&
+             lower.compare(lower.size() - 4, 4, ".rom") != 0))
+        {
+            continue;
+        }
+        if (best.empty() || name < best)
+        {
+            best = name;
+        }
+    }
+    return best;
+}
+
 } // namespace
 
 namespace libretro_rt
@@ -1196,6 +1253,51 @@ bool Initialize(const char* corePath, const char* gamePath, const char* systemDi
         SetOptionOverride("swanstation_MemoryCards_Card2Type", "None");
     }
     }
+    else if (g_system == System::Ps2)
+    {
+        // LRPS2 (parallel-ps2) is driven through the same lockstep path as
+        // parallel-dc. Pin everything that can make one host boot a different
+        // machine from another; the options are ignored if a core build does
+        // not declare them.
+        //
+        // Our libretro host only exposes an OpenGL FBO to hardware-rendering
+        // cores. LRPS2 defaults to Vulkan in its own README, but its "Auto"
+        // setting asks the frontend first -- forcing OpenGL here keeps the
+        // picture on the CPU-visible FBO the rollback presenter reads back.
+        SetOptionOverride("pcsx2_renderer", "OpenGL");
+        SetOptionOverride("pcsx2_uncapped_framerate_hint", "disabled");
+        SetOptionOverride("pcsx2_game_enhancements_hint", "disabled");
+        SetOptionOverride("pcsx2_enable_cheats", "disabled");
+        SetOptionOverride("pcsx2_use_external_gameindex", "disabled");
+        SetOptionOverride("pcsx2_usb_camera", "disabled");
+        SetOptionOverride("pcsx2_dev9_hdd", "disabled");
+        SetOptionOverride("pcsx2_dev9_eth", "disabled");
+        SetOptionOverride("pcsx2_mtvu", "disabled");
+        SetOptionOverride("pcsx2_instant_vu1", "enabled");
+        SetOptionOverride("pcsx2_ee_cpu", "Recompiler");
+        SetOptionOverride("pcsx2_ee_cycle_rate", "100% (Normal Speed)");
+        SetOptionOverride("pcsx2_ee_cycle_skip", "disabled");
+        SetOptionOverride("pcsx2_ee_accurate_fpu", "enabled");
+
+        if (g_memoryCardDisabled)
+        {
+            // A synchronized session must not open the player's PS2 memory
+            // cards, HDD image or cheat files. Emulation.cpp points saveDir at
+            // an isolated per-session directory; disabling the shared cards
+            // removes them from the emulated machine and from the state too.
+            SetOptionOverride("pcsx2_shared_memory_cards", "disabled");
+
+            // PS2 has no HLE fallback: same as the naomi.zip problem, both
+            // peers must boot an identical BIOS. Pick one filename from the
+            // isolated folder deterministically; the frame-0 state checksum
+            // still catches peers that supplied different bytes for it.
+            const std::string bios = ps2_pinned_bios_name(g_systemDir.c_str());
+            if (!bios.empty())
+            {
+                SetOptionOverride("pcsx2_bios", bios.c_str());
+            }
+        }
+    }
     else
     {
         // parallel-dc: keep the machine identical on both peers. Its core
@@ -1250,8 +1352,11 @@ bool Initialize(const char* corePath, const char* gamePath, const char* systemDi
 
     // The DC core declares JOYPAD subclasses (twinstick, ASCII stick). Forcing
     // the base pad keeps every widget of the 12-byte packet addressable through
-    // the same RETRO_DEVICE_ID_JOYPAD_* bits the input dialog binds.
-    if (g_system != System::Psx)
+    // the same RETRO_DEVICE_ID_JOYPAD_* bits the input dialog binds. PS2 keeps
+    // the default analog endpoint so the DualShock axes in the same 12-byte
+    // packet reach LRPS2 through RETRO_DEVICE_ANALOG.
+    if (g_system == System::Dreamcast || g_system == System::Naomi ||
+        g_system == System::Atomiswave)
     {
         g_portDevice         = RETRO_DEVICE_JOYPAD;
         g_portDeviceExplicit = true;
@@ -1487,15 +1592,26 @@ bool IsMediaFile(const char* path, System* detected)
     const std::string ext = lower.substr(dot);
     const bool naomiHint = path_has_system_hint(lower, "naomi") || path_has_system_hint(lower, "naomi2");
     const bool atomHint  = path_has_system_hint(lower, "atomiswave") || path_has_system_hint(lower, "atom");
+    const bool ps2Hint   = path_has_system_hint(lower, "ps2") ||
+                           path_has_system_hint(lower, "psx2") ||
+                           path_has_system_hint(lower, "playstation2") ||
+                           path_has_system_hint(lower, "playstation 2");
     const bool dcHint    = path_has_system_hint(lower, "dreamcast") || path_has_system_hint(lower, "dc") ||
                            naomiHint || atomHint;
-    const System hintedSystem = atomHint ? System::Atomiswave
-                              : (naomiHint ? System::Naomi : System::Dreamcast);
+    const System hintedSystem = ps2Hint ? System::Ps2
+                               : atomHint ? System::Atomiswave
+                               : (naomiHint ? System::Naomi : System::Dreamcast);
 
-    // Formats only parallel-dc understands.
-    if (ext == ".gdi" || ext == ".cdi" || ext == ".elf")
+    // Formats only parallel-dc understands. .elf is also bootable by LRPS2,
+    // so an explicit PS2 hint wins over the Dreamcast default.
+    if (ext == ".gdi" || ext == ".cdi")
     {
         if (detected != nullptr) *detected = System::Dreamcast;
+        return true;
+    }
+    if (ext == ".elf")
+    {
+        if (detected != nullptr) *detected = ps2Hint ? System::Ps2 : System::Dreamcast;
         return true;
     }
     if (ext == ".lst" || ext == ".dat")
@@ -1525,7 +1641,7 @@ bool IsMediaFile(const char* path, System* detected)
         FILE* file = std::fopen(cue.c_str(), "rb");
         if (file != nullptr)
         {
-            if (detected != nullptr) *detected = dcHint ? hintedSystem : System::Psx;
+            if (detected != nullptr) *detected = (dcHint || ps2Hint) ? hintedSystem : System::Psx;
             std::fclose(file);
             return true;
         }
@@ -1535,7 +1651,15 @@ bool IsMediaFile(const char* path, System* detected)
     if (ext == ".cue" || ext == ".chd" || ext == ".m3u" ||
         ext == ".ccd" || ext == ".mds" || ext == ".toc")
     {
-        if (detected != nullptr) *detected = dcHint ? hintedSystem : System::Psx;
+        if (detected != nullptr) *detected = (dcHint || ps2Hint) ? hintedSystem : System::Psx;
+        return true;
+    }
+
+    // ISO/CSO are shared by PS1 and PS2; only claim them when the path names
+    // the PS2, otherwise leave them to the PS1 side (or the generic browser).
+    if ((ext == ".iso" || ext == ".cso") && ps2Hint)
+    {
+        if (detected != nullptr) *detected = System::Ps2;
         return true;
     }
 

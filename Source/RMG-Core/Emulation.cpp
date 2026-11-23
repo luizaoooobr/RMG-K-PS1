@@ -1069,7 +1069,7 @@ static void fbneo_size_rollback_state()
 }
 
 // ---------------------------------------------------------------------------
-// libretro session glue (PlayStation, Dreamcast, NAOMI and Atomiswave).
+// libretro session glue (PlayStation, PlayStation 2, Dreamcast, NAOMI and Atomiswave).
 //
 // These files are neither N64 ROMs nor FBNeo romsets, so they bypass both the
 // mupen64plus ROM gate and FBNeo. The core is a separate libretro shared library
@@ -1084,12 +1084,23 @@ static const char* libretro_system_dir_name(libretro_rt::System system)
         case libretro_rt::System::Dreamcast:  return "dreamcast";
         case libretro_rt::System::Naomi:      return "naomi";
         case libretro_rt::System::Atomiswave: return "atomiswave";
+        case libretro_rt::System::Ps2:        return "ps2";
         default:                              return "psx";
     }
 }
 
 static std::vector<std::string> libretro_core_candidates(libretro_rt::System system)
 {
+    if (system == libretro_rt::System::Ps2)
+    {
+#if defined(_WIN32)
+        return { "pcsx2_libretro.dll" };
+#elif defined(__APPLE__)
+        return { "pcsx2_libretro.dylib" };
+#else
+        return { "pcsx2_libretro.so" };
+#endif
+    }
     if (system != libretro_rt::System::Psx)
     {
 #if defined(_WIN32)
@@ -1133,7 +1144,9 @@ static std::filesystem::path libretro_find_core(
     libretro_rt::System system = libretro_rt::System::Psx)
 {
     const char* env = (system == libretro_rt::System::Psx)
-                    ? std::getenv("RMGK_PSX_CORE") : std::getenv("RMGK_DC_CORE");
+                    ? std::getenv("RMGK_PSX_CORE")
+                    : (system == libretro_rt::System::Ps2)
+                        ? std::getenv("RMGK_PS2_CORE") : std::getenv("RMGK_DC_CORE");
     if (env != nullptr && env[0] != '\0')
     {
         std::filesystem::path path = env;
@@ -1172,7 +1185,9 @@ static std::filesystem::path libretro_system_directory(
     libretro_rt::System system = libretro_rt::System::Psx, bool isolated = false)
 {
     const char* env = (system == libretro_rt::System::Psx)
-                    ? std::getenv("RMGK_PSX_SYSTEM") : std::getenv("RMGK_DC_SYSTEM");
+                    ? std::getenv("RMGK_PSX_SYSTEM")
+                    : (system == libretro_rt::System::Ps2)
+                        ? std::getenv("RMGK_PS2_SYSTEM") : std::getenv("RMGK_DC_SYSTEM");
     if (env != nullptr && env[0] != '\0')
     {
         return std::filesystem::path(env).make_preferred();
@@ -1196,17 +1211,22 @@ static std::filesystem::path libretro_save_directory(
 
 // parallel-dc boots NAOMI and Dreamcast content with a built-in HLE BIOS when
 // no real one is available, but Atomiswave (and System SP) refuse to start
-// without their BIOS: retro_load_game() fails and the frontend only sees
-// "core refused the content". A network session points the core at an isolated
-// system directory, so seed it with the read-only BIOS archives from the
-// regular directory. VMUs/EEPROMs are save-like state and stay isolated in
-// saveDir -- nothing that can differ between peers is copied.
-static void seed_isolated_libretro_bios(const std::filesystem::path& regularSystemDir,
-                                        const std::filesystem::path& isolatedSystemDir)
+// without their BIOS. LRPS2 always needs a PS2 BIOS. A network session points
+// the core at an isolated system directory, so seed it with the read-only BIOS
+// images from the regular directory. VMUs/EEPROMs/memory cards are save-like
+// state and stay isolated in saveDir -- nothing that can differ is copied.
+static void seed_isolated_libretro_bios(libretro_rt::System system,
+                                         const std::filesystem::path& regularSystemDir,
+                                         const std::filesystem::path& isolatedSystemDir)
 {
-    // parallel-dc looks up BIOS archives under <system directory>/dc/
-    const std::filesystem::path source = regularSystemDir / "dc";
-    const std::filesystem::path target = isolatedSystemDir / "dc";
+    // parallel-dc looks up BIOS archives under <system directory>/dc/, while
+    // LRPS2 expects <system directory>/pcsx2/bios/. Copy only BIOS images:
+    // VMUs, memory cards and HDD files stay out of the session.
+    const std::filesystem::path relative = (system == libretro_rt::System::Ps2)
+        ? (std::filesystem::path("pcsx2") / "bios")
+        : std::filesystem::path("dc");
+    const std::filesystem::path source = regularSystemDir / relative;
+    const std::filesystem::path target = isolatedSystemDir / relative;
 
     std::error_code ec;
     if (!std::filesystem::is_directory(source, ec))
@@ -1242,9 +1262,13 @@ static bool libretro_start_runtime(const std::filesystem::path& rom,
     if (core.empty())
     {
         const char* envName = (system == libretro_rt::System::Psx)
-                            ? "RMGK_PSX_CORE" : "RMGK_DC_CORE";
+                            ? "RMGK_PSX_CORE"
+                            : (system == libretro_rt::System::Ps2)
+                                ? "RMGK_PS2_CORE" : "RMGK_DC_CORE";
         const char* coreName = (system == libretro_rt::System::Psx)
-                             ? "swanstation_libretro" : "parallel_dc_libretro";
+                             ? "swanstation_libretro"
+                             : (system == libretro_rt::System::Ps2)
+                                 ? "pcsx2_libretro" : "parallel_dc_libretro";
         CoreSetError(std::string("CoreStartEmulation: no libretro core found for ") +
             libretro_system_dir_name(system) + " (set " + envName + " or put " +
             coreName + " in the cores directory)");
@@ -1262,7 +1286,7 @@ static bool libretro_start_runtime(const std::filesystem::path& rom,
     std::filesystem::create_directories(saveDir, ec);
     if (isolated)
     {
-        seed_isolated_libretro_bios(libretro_system_directory(system, false), systemDir);
+        seed_isolated_libretro_bios(system, libretro_system_directory(system, false), systemDir);
     }
 
     // Every libretro session is a rollback session: pin machine-local values
@@ -1308,7 +1332,9 @@ static bool libretro_start_runtime(const std::filesystem::path& rom,
         : (system == libretro_rt::System::Dreamcast)
             ? CoreLibretroSystem::Dreamcast
             : (system == libretro_rt::System::Naomi)
-                ? CoreLibretroSystem::Naomi : CoreLibretroSystem::Atomiswave;
+                ? CoreLibretroSystem::Naomi
+                : (system == libretro_rt::System::Ps2)
+                    ? CoreLibretroSystem::Ps2 : CoreLibretroSystem::Atomiswave;
     CoreAddCallbackMessage(CoreDebugMessageType::Info,
         std::string("CoreStartEmulation: libretro core=") + libretro_rt::CoreName() +
         " system=" + libretro_system_dir_name(system) +
@@ -1336,6 +1362,8 @@ static const char* libretro_session_id(CoreLibretroSystem system, bool local)
             return local ? "rmgk-gekko-local-naomi" : "rmgk-gekko-naomi";
         case CoreLibretroSystem::Atomiswave:
             return local ? "rmgk-gekko-local-atom" : "rmgk-gekko-atom";
+        case CoreLibretroSystem::Ps2:
+            return local ? "rmgk-gekko-local-ps2" : "rmgk-gekko-ps2";
         default:
             return local ? "rmgk-gekko-local-psx" : "rmgk-gekko-psx";
     }
@@ -1404,6 +1432,7 @@ static CoreLibretroSystem from_libretro_system(libretro_rt::System system)
         case libretro_rt::System::Dreamcast:  return CoreLibretroSystem::Dreamcast;
         case libretro_rt::System::Naomi:      return CoreLibretroSystem::Naomi;
         case libretro_rt::System::Atomiswave: return CoreLibretroSystem::Atomiswave;
+        case libretro_rt::System::Ps2:        return CoreLibretroSystem::Ps2;
         default:                              return CoreLibretroSystem::Psx;
     }
 }

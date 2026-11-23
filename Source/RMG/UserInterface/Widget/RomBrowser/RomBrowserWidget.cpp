@@ -542,6 +542,10 @@ void RomBrowserWidget::addRomData(QString file, CoreRomType type, CoreRomHeader 
     {
         gameFormat = "PlayStation";
     }
+    else if (type == CoreRomType::PlayStation2)
+    {
+        gameFormat = "PlayStation 2";
+    }
     else if (type == CoreRomType::Dreamcast)
     {
         gameFormat = "Dreamcast";

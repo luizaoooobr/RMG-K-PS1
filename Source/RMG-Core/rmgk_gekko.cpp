@@ -108,13 +108,13 @@ unsigned int g_GekkoStateCapacity = kFbneoStateCapacityBytes;
 // experiments; FBNeo and Mupen never used it: their states are small (283 KB /
 // 8.4 MB), per-frame saves keep desync detection on, and the FBNeo sound chips
 // are re-rendered across a long rewind, which shows up as repeated audio.
-// Dreamcast/NAOMI/Atomiswave keep limited saving in every mode because
-// parallel-dc reports a ~61.5 MB serialized state. Saving and hashing that per
-// frame cost ~35 ms and pinned the game in the mid-40s. Their netplay sessions
-// now run in lockstep (prediction window 0): no prediction means no rollback,
-// and the only state kept is the frame-0 anchor. Desync detection is no longer
-// tied to those states — the frontend reports a cheap deterministic audio+input
-// digest per frame through GekkoNet's healthcheck channel. PS1 keeps the
+// Dreamcast/NAOMI/Atomiswave/PS2 keep limited saving in every mode: parallel-dc
+// reports a ~61.5 MB state and parallel-ps2 around 47-50 MB, so saving and
+// hashing them per frame is far too expensive. Their netplay sessions run in
+// lockstep (prediction window 0): no prediction means no rollback, and the only
+// state kept is the frame-0 anchor. Desync detection is no longer tied to those
+// states — the frontend reports a cheap deterministic audio+input digest per
+// frame through GekkoNet's healthcheck channel. PS1 keeps the
 // per-frame state cadence because SwanStation only writes ~4.3 MB of its 11 MB
 // state; FBNeo and Mupen states are small and were never changed.
 bool limited_saving_for_runtime()
@@ -133,10 +133,11 @@ bool limited_saving_for_runtime()
     return env != nullptr && (std::strcmp(env, "1") == 0 || std::strcmp(env, "true") == 0);
 }
 
-// Netplay for the Dreamcast-class libretro cores uses lockstep, like RetroArch:
-// wait for every peer's input instead of predicting and rolling back. The
-// ~61.5 MB serializer then runs only for the frame-0 anchor, and per-frame
-// desync detection is provided by the audio/input healthcheck below.
+// Netplay for the Dreamcast-class libretro cores and PS2 uses lockstep, like
+// RetroArch: wait for every peer's input instead of predicting and rolling
+// back. Their serializers are large (DC ~61.5 MB, PS2 ~47-50 MB), so they run
+// only for the frame-0 anchor; per-frame desync detection is provided by the
+// audio/input healthcheck below.
 bool use_dreamcast_lockstep()
 {
     if (CoreRollbackGetCore() != CoreRollbackCore::Libretro)
@@ -147,7 +148,8 @@ bool use_dreamcast_lockstep()
     const CoreLibretroSystem system = CoreGetLibretroSystem();
     return system == CoreLibretroSystem::Dreamcast ||
            system == CoreLibretroSystem::Naomi ||
-           system == CoreLibretroSystem::Atomiswave;
+           system == CoreLibretroSystem::Atomiswave ||
+           system == CoreLibretroSystem::Ps2;
 }
 
 constexpr int kGekkoMaxLoggedFrames = 600;

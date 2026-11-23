@@ -97,6 +97,18 @@ then
 fi
 cp -f "$dc_core" "$bin_dir/usr/lib/RMG/Core/cores/parallel_dc_libretro.so"
 
+# PlayStation 2 sessions load parallel-ps2 (pcsx2_libretro) from the same
+# directory. Bundle the pinned build: a different core or BIOS setup on one
+# peer would break the lockstep session even before the first state checksum.
+ps2_core="${RMGK_PS2_CORE_SO:-$toplvl_dir/Package/Ps2Core/pcsx2_libretro.so}"
+if [[ ! -s "$ps2_core" ]]
+then
+	echo "PS2 core not found: $ps2_core" >&2
+	echo "Build it with Package/Ps2Core/build-linux.sh or point RMGK_PS2_CORE_SO at a pcsx2_libretro.so." >&2
+	exit 1
+fi
+cp -f "$ps2_core" "$bin_dir/usr/lib/RMG/Core/cores/pcsx2_libretro.so"
+
 ln -s com.github.Rosalie241.RMG.png "$bin_dir"/.DirIcon
 mv "$bin_dir/usr/share" "$bin_dir/share"
 mv "$bin_dir/usr" "$bin_dir/shared"

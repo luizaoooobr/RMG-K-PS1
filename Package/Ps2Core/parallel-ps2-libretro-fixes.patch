@@ -1,0 +1,21 @@
+diff --git a/pcsx2/CDVD/CDVD.c b/pcsx2/CDVD/CDVD.c
+index 3485f5a..a0f89e2 100644
+--- a/pcsx2/CDVD/CDVD.c
++++ b/pcsx2/CDVD/CDVD.c
+@@ -835,7 +835,15 @@ void cdvdReset(void)
+ 	{
+ 		/* CDVD internally uses GMT+9.  If you think the time's wrong, you're wrong. */
+ 		/* Set up your time zone and winter/summer in the BIOS.  No PS2 BIOS I know of features automatic DST. */
+-		const time_t utc_time  = time(NULL);
++		/* RMG-K: in a synchronized session both peers must see the same clock.
++		 * Host local time (including time zone and DST) makes games that read
++		 * the PS2 RTC diverge from the first frame; offline sessions keep the
++		 * host clock as before. */
++		const char* rmgk_deterministic_rtc = getenv("RMGK_DETERMINISTIC_RTC");
++		const int rmgk_pin_clock = rmgk_deterministic_rtc != NULL &&
++			rmgk_deterministic_rtc[0] == '1';
++		/* 2000-01-01 00:00:00 UTC, before the GMT+9 shift below. */
++		const time_t utc_time = rmgk_pin_clock ? (time_t)946684800 : time(NULL);
+ 		const time_t gmt9_time = (utc_time + (60 * 60 * 9));
+ 		struct tm curtime;
+ 		memset(&curtime, 0, sizeof(curtime));

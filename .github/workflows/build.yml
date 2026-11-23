@@ -105,7 +105,7 @@ jobs:
           cmake --build "$build_dir" --parallel "$(nproc)"
           cmake --install "$build_dir" --strip --prefix="$bin_dir/usr"
         shell: bash
-      - name: Prepare libretro cores (PS1 / DC)
+      - name: Prepare libretro cores (PS1 / DC / PS2)
         if: ${{ matrix.features == 'ON' && matrix.architecture == 'x86_64' && matrix.configuration == 'Release' }}
         env:
           CORES_TAG: vdev-9999
@@ -118,7 +118,8 @@ jobs:
           curl -fL "$base/swanstation_libretro-$CORES_TAG-linux64.so" \
             -o Package/PsxCore/swanstation_libretro.so
           bash Package/DcCore/build-linux.sh "$(pwd)/Package/DcCore"
-          ls -l Package/PsxCore/swanstation_libretro.so Package/DcCore/parallel_dc_libretro.so
+          bash Package/Ps2Core/build-linux.sh "$(pwd)/Package/Ps2Core"
+          ls -l Package/PsxCore/swanstation_libretro.so Package/DcCore/parallel_dc_libretro.so Package/Ps2Core/pcsx2_libretro.so
         shell: bash
       - name: Create AppImage
         if: ${{ matrix.features == 'ON' && matrix.architecture == 'x86_64' && matrix.configuration == 'Release' }}
@@ -137,6 +138,12 @@ jobs:
         with:
           name: parallel_dc_libretro-${{ env.GIT_REVISION }}-linux64
           path: Package/DcCore/parallel_dc_libretro.so
+      - name: Upload patched PS2 core (Linux)
+        if: ${{ matrix.features == 'ON' && matrix.architecture == 'x86_64' && matrix.configuration == 'Release' }}
+        uses: actions/upload-artifact@v5
+        with:
+          name: pcsx2_libretro-${{ env.GIT_REVISION }}-linux64
+          path: Package/Ps2Core/pcsx2_libretro.so
 
   build-windows:
     runs-on: windows-2025
@@ -230,15 +237,16 @@ jobs:
           cmake --install "$build_dir" --strip --prefix="$src_dir"
           cmake --build "$build_dir" --target=bundle_dependencies
         shell: msys2 {0}
-      - name: Prepare libretro cores (PS1 / DC)
+      - name: Prepare libretro cores (PS1 / DC / PS2)
         if: ${{ matrix.features == 'ON' && matrix.configuration == 'Release' }}
         env:
           CORES_TAG: vdev-9999
         shell: msys2 {0}
         run: |
-          # The PS1 core stays pinned on vdev-9999. The Dreamcast core is built
-          # from this checkout's pinned revision and patch so the Windows
-          # portable, installer and standalone asset cannot drift from Linux.
+          # The PS1 core stays pinned on vdev-9999. The Dreamcast and PS2 cores
+          # are built from this checkout's pinned revisions and patches so the
+          # Windows portable, installer and standalone assets cannot drift from
+          # Linux.
           set -euo pipefail
           base="https://github.com/${{ github.repository }}/releases/download/$CORES_TAG"
           out_dir="$(pwd)/Bin/${{ matrix.configuration }}/Core/cores"
@@ -246,6 +254,7 @@ jobs:
           curl -fL "$base/swanstation_libretro-$CORES_TAG-win64.dll" \
             -o "$out_dir/swanstation_libretro.dll"
           bash Package/DcCore/build-windows.sh "$out_dir"
+          bash Package/Ps2Core/build-windows.sh "$out_dir"
           sha256sum "$out_dir"/*.dll
       - name: Create Installer
         if: ${{ matrix.features == 'ON' && matrix.configuration == 'Release' }}
@@ -266,6 +275,12 @@ jobs:
         with:
           name: parallel_dc_libretro-${{ env.GIT_REVISION }}-win64
           path: Bin/Release/Core/cores/parallel_dc_libretro.dll
+      - name: Upload patched PS2 core (Windows)
+        if: ${{ matrix.features == 'ON' && matrix.configuration == 'Release' }}
+        uses: actions/upload-artifact@v5
+        with:
+          name: pcsx2_libretro-${{ env.GIT_REVISION }}-win64
+          path: Bin/Release/Core/cores/pcsx2_libretro.dll
       - name: Upload RMG (Installer)
         if: ${{ matrix.features == 'ON' && matrix.configuration == 'Release' }}
         uses: actions/upload-artifact@v5
@@ -306,6 +321,13 @@ jobs:
             echo "Linux DC core artifact not found" >&2
           fi
 
+          linux_ps2_core="$(find artifacts -type f -path '*pcsx2_libretro-*-linux64/pcsx2_libretro.so' | head -n 1)"
+          if [ -n "$linux_ps2_core" ]; then
+            cp "$linux_ps2_core" "release/pcsx2_libretro-${{ env.VERSION }}-linux64.so"
+          else
+            echo "Linux PS2 core artifact not found" >&2
+          fi
+
           # Zip Windows portable build. Machine-local state and user content must
           # never ship in a release: Config/Cache hold per-user settings, roms and
           # saves are copyrighted/user data, and logs/dumps are debug noise.
@@ -331,7 +353,7 @@ jobs:
           # makes each revision easy to find and verify by hash.
           win_cores="artifacts/RMG-K-Portable-Windows64-${{ env.VERSION }}/Core/cores"
           if [ -d "$win_cores" ]; then
-            for core in parallel_dc swanstation; do
+            for core in parallel_dc swanstation pcsx2; do
               cp "$win_cores/${core}_libretro.dll" \
                 "release/${core}_libretro-${{ env.VERSION }}-win64.dll"
             done

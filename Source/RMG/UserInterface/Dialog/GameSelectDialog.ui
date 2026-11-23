@@ -72,6 +72,11 @@
          <string>Atomiswave</string>
         </property>
        </item>
+       <item>
+        <property name="text">
+         <string>PlayStation 2</string>
+        </property>
+       </item>
       </widget>
      </item>
      <item>
