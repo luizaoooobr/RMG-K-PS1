@@ -74,20 +74,16 @@ Useful overrides: `PS2_SRC` (reuse a dedicated checkout), `PS2_REPO`, `PS2_REV`
 and `JOBS`. The checkout is hard-reset and cleaned before the patch is applied,
 so never point `PS2_SRC` at a tree with changes you want to keep.
 
-## Reference builds
+## Reference builds (release `vdev-9999`)
 
-The release assets are named `pcsx2_libretro-<version>-linux64.so` and
-`pcsx2_libretro-<version>-win64.dll`. Inside AppImage/portable packages they are
-installed as `pcsx2_libretro.so` / `pcsx2_libretro.dll`; that is the filename
-the RMG-K runtime looks for.
-
-### Windows (validated locally, MSYS2 UCRT64)
-
-| File | Bytes | SHA-256 |
+| Asset | Bytes | SHA-256 |
 | --- | --- | --- |
-| `pcsx2_libretro.dll` | 8,945,296 | `aadffb638da204898cb8ed0e7ce98609896dca7de8fd5e99d1e065b605a06356` |
+| `pcsx2_libretro-vdev-9999-linux64.so` | 8,301,784 | `32b880e216324e19717a03c8afd9784b7db0b57e1d560f60b738f8f405c9c67f` |
+| `pcsx2_libretro-vdev-9999-win64.dll` | 9,195,643 | `65a99c40dd5eacf0056e4fc90503eec0d5167ea619837533306581b13dc3bc3e` |
 
-### Linux
-
-Filled in from the first successful CI build of this integration (same pinned
-revision and patch as the Windows reference above).
+Inside the AppImage/portable packages they are installed as
+`pcsx2_libretro.so` / `pcsx2_libretro.dll`; that is the filename the RMG-K
+runtime looks for. The local MSYS2 UCRT64 validation build produced a different
+DLL hash (`aadffb638da204898cb8ed0e7ce98609896dca7de8fd5e99d1e065b605a06356`)
+because its compiler toolchain differs from CI; both come from the same pinned
+revision and patch.
