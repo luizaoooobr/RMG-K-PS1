@@ -1357,10 +1357,11 @@ static bool libretro_start_runtime(const std::filesystem::path& rom,
         CoreRollbackSetCore(CoreRollbackCore::Mupen);
         return false;
     }
-    // Serialized sizes can drift by a few bytes between frames (CD/SPU state),
-    // so give the ring a full megabyte of head room.
+    // LRPS2 can grow its serialized state well after boot (disc/media state);
+    // a few bytes of drift is not enough head room for it, so keep 32 MB above
+    // the measured size. Smaller libretro runtimes simply allocate less.
     rmgk_gekko::set_state_capacity_bytes(
-        static_cast<unsigned int>(stateSize) + (1u * 1024u * 1024u));
+        static_cast<unsigned int>(stateSize) + (32u * 1024u * 1024u));
 
     s_LibretroSessionActive = true;
     s_LibretroTarget        = rom;

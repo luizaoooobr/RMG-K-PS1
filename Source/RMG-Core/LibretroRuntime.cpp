@@ -1795,7 +1795,8 @@ bool SaveStateInto(unsigned char* buffer, int capacity, int& outLen, int& outChe
     const size_t size = p_retro_serialize_size();
     if (size == 0 || size > static_cast<size_t>(capacity))
     {
-        CoreSetError("LibretroRuntime: core state does not fit the rollback buffer");
+        CoreSetError("LibretroRuntime: core state " + std::to_string(size) +
+            "B does not fit the rollback buffer " + std::to_string(capacity) + "B");
         return false;
     }
 

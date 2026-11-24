@@ -86,10 +86,10 @@ namespace
 constexpr unsigned int kFbneoStateCapacityBytes = rmgk_gekko::kFbneoStateCapacityBytes;
 constexpr unsigned int kMupenStateCapacityBytes = rmgk_gekko::kMupenStateCapacityBytes;
 constexpr unsigned int kStateCapacityMinBytes = 1u * 1024u * 1024u;
-// PS2 (parallel-ps2/LRPS2) reports states well above the old 64 MB ceiling on
-// some discs, e.g. Street Fighter EX 3. Lockstep keeps only three buffers, so
-// the extra ceiling costs nothing for the smaller runtimes.
-constexpr unsigned int kStateCapacityMaxBytes = 128u * 1024u * 1024u;
+// LRPS2 states on some PS2 discs (e.g. Street Fighter EX 3) exceed 128 MB.
+// The ceiling is only a guard: GekkoNet still allocates exactly the capacity
+// requested by CoreStartEmulation, and lockstep holds just three buffers.
+constexpr unsigned int kStateCapacityMaxBytes = 512u * 1024u * 1024u;
 unsigned int g_GekkoStateCapacity = kFbneoStateCapacityBytes;
 
 // How often GekkoNet snapshots the state. The libretro (PS1/swanstation) path
