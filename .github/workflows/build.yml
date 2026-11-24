@@ -59,7 +59,14 @@ jobs:
             libegl1-mesa-dev libdbus-1-dev libibus-1.0-dev libudev-dev
       - name: Prepare Environment
         run: |
-          echo "GIT_REVISION=$(git describe --tags --always)" >> $GITHUB_ENV
+          # On tag pushes use the tag itself: git describe is ambiguous when a
+          # second tag points at the same commit and would make the artifacts
+          # (and therefore the release assets) use the wrong tag name.
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            echo "GIT_REVISION=$GITHUB_REF_NAME" >> $GITHUB_ENV
+          else
+            echo "GIT_REVISION=$(git describe --tags --always)" >> $GITHUB_ENV
+          fi
       - name: Prepare FBNeo
         run: |
           fbneo_dir="$(pwd)/../FBNeo"
@@ -206,7 +213,11 @@ jobs:
             "https://repo.msys2.org/mingw/ucrt64/mingw-w64-ucrt-x86_64-minizip-1.3.1-1-any.pkg.tar.zst"
       - name: Prepare Environment
         run: |
-          $env:revision = git describe --tags --always
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            $env:revision = $env:GITHUB_REF_NAME
+          } else {
+            $env:revision = git describe --tags --always
+          }
           echo "GIT_REVISION=$env:revision" >> $env:GITHUB_ENV
         shell: pwsh
       - name: Prepare FBNeo
