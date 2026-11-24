@@ -1264,7 +1264,12 @@ bool Initialize(const char* corePath, const char* gamePath, const char* systemDi
         // cores. LRPS2 defaults to Vulkan in its own README, but its "Auto"
         // setting asks the frontend first -- forcing OpenGL here keeps the
         // picture on the CPU-visible FBO the rollback presenter reads back.
-        SetOptionOverride("pcsx2_renderer", "OpenGL");
+        // The OpenGL renderer calls into the GPU driver from LRPS2's own GS
+        // thread, where our on-demand QOpenGLContext is not current; NVIDIA's
+        // ICD then dereferences a null context and crashes. The software GS
+        // renderer has no GL dependency and feeds our CPU-visible frame path
+        // directly, so it is both crash-free and deterministic for lockstep.
+        SetOptionOverride("pcsx2_renderer", "Software (SW)");
         SetOptionOverride("pcsx2_uncapped_framerate_hint", "disabled");
         SetOptionOverride("pcsx2_game_enhancements_hint", "disabled");
         SetOptionOverride("pcsx2_enable_cheats", "disabled");
