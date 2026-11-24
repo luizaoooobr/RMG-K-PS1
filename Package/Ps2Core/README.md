@@ -12,7 +12,7 @@ PCSX2's GPL/LGPL licensing.
 | Upstream | `https://github.com/libretro/parallel-ps2.git` |
 | Revision | `6fbf88296c0fef637a2c50064ecc8deebd577d9a` |
 | Frontend library | `pcsx2_libretro.so` / `pcsx2_libretro.dll` |
-| Renderer | OpenGL (RMG-K hands hardware-rendering cores an OpenGL FBO) |
+| Renderer | Software (SW) (avoids GPU-driver threading crashes; feeds the CPU-visible frame path) |
 | Licensing | GPL/LGPL, inherited from PCSX2 |
 
 `build-linux.sh` and `build-windows.sh` reset their checkout to this revision,
@@ -36,9 +36,12 @@ PS2 uses the **same lockstep path as Dreamcast**, not per-frame rollback:
 
 - A serialized state is around 47-50 MB. RMG-K only keeps the frame-0 anchor
   and relies on the audio/input healthcheck for per-frame desync detection.
-- `pcsx2_renderer=OpenGL`, `pcsx2_mtvu=disabled`,
+- `pcsx2_renderer=Software (SW)`, `pcsx2_mtvu=disabled`,
   `pcsx2_uncapped_framerate_hint=disabled`, `pcsx2_enable_cheats=disabled` and
-  the other timing/accuracy overrides are pinned by the host at startup.
+  the other timing/accuracy overrides are pinned by the host at startup. The
+  software GS renderer is used because LRPS2's OpenGL renderer issues driver
+  calls from its own GS thread, where the frontend's on-demand GL context is
+  not current (NVIDIA's ICD crashed on that path).
 - `pcsx2_shared_memory_cards=disabled` in synchronized sessions: the emulator
   never touches the player's memory cards, HDD image or cheat files. Saves and
   savestates stay in isolated per-session directories.
