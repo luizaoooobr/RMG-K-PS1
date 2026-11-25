@@ -26,9 +26,34 @@ enum class LibretroInputProfileId
     Psx        = 0,
     Dreamcast  = 1,
     Arcade     = 2,
-    Naomi      = Arcade,     // old call sites keep working
+    Ps2        = 4,        // dedicated DualShock 2 profile, independent from PS1
+    Naomi      = Arcade,   // old call sites keep working
     Atomiswave = Arcade,
 };
+
+// A PS2 DualShock has 16 digital buttons plus two analog sticks. Joypad bits
+// stay 0..15; negative codes identify analog axis rows in the dialog so the
+// sticks can be configured instead of being hardcoded to the first gamepad.
+enum LibretroAnalogRowBit
+{
+    LibretroAxisLeftX  = -1,
+    LibretroAxisLeftY  = -2,
+    LibretroAxisRightX = -3,
+    LibretroAxisRightY = -4,
+};
+
+constexpr int LIBRETRO_MAX_PROFILE_ROWS = 20;
+
+inline bool isLibretroAnalogRow(int bit)
+{
+    return bit >= LibretroAxisRightY && bit <= LibretroAxisLeftX;
+}
+
+// Returns 0=LX, 1=LY, 2=RX, 3=RY for an analog row, -1 for a digital button.
+inline int libretroAnalogAxisIndex(int bit)
+{
+    return isLibretroAnalogRow(bit) ? (-bit - 1) : -1;
+}
 
 struct LibretroInputProfile
 {
@@ -39,15 +64,15 @@ struct LibretroInputProfile
     const char* legacyDeviceSectionPrefixes[2];
     const char* traceFile;
     int         count;
-    const char* names[16];         // dialog legend, in display order
-    int         bits[16];          // RETRO_DEVICE_ID_JOYPAD_* bit for each row
-    int         defaults[16];      // SDL3 scancode fallback for P1
-    const char* legacyNames[16][6]; // every name this row had in an older build
+    const char* names[LIBRETRO_MAX_PROFILE_ROWS];  // dialog legend, in display order
+    int         bits[LIBRETRO_MAX_PROFILE_ROWS];   // joypad bit, or LibretroAnalogRowBit
+    int         defaults[LIBRETRO_MAX_PROFILE_ROWS]; // SDL3 scancode fallback for P1
+    const char* legacyNames[LIBRETRO_MAX_PROFILE_ROWS][6]; // older names of each row
 };
 
 inline const LibretroInputProfile& libretroInputProfile(LibretroInputProfileId id)
 {
-    static const LibretroInputProfile profiles[4] = {
+    static const LibretroInputProfile profiles[5] = {
         // PlayStation: keep the original 14-row table verbatim so existing
         // saved bindings and the legacy scancode fallback keep working.
         {
@@ -227,9 +252,59 @@ inline const LibretroInputProfile& libretroInputProfile(LibretroInputProfileId i
                 { "Service", nullptr, nullptr, nullptr },
             },
         },
+        // PlayStation 2: dedicated DualShock 2 layout with its own saved
+        // section, so PS1 bindings are never reused by a PS2 game. The 16
+        // digital rows cover every joypad button (including L3/R3); the last
+        // four rows map the analog sticks to the 12-byte packet's axes.
+        {
+            "PlayStation 2 Input",
+            "RMG PS2 Input - Global", { nullptr, nullptr },
+            "RMG PS2 Device - P", { nullptr, nullptr },
+            "ps2_input.log",
+            20,
+            {
+                "PS2 D-Pad Up", "PS2 D-Pad Down", "PS2 D-Pad Left", "PS2 D-Pad Right",
+                "PS2 Cross", "PS2 Circle", "PS2 Square", "PS2 Triangle",
+                "PS2 L1", "PS2 R1", "PS2 L2", "PS2 R2",
+                "PS2 Select", "PS2 Start", "PS2 L3", "PS2 R3",
+                "PS2 Analog Left X", "PS2 Analog Left Y",
+                "PS2 Analog Right X", "PS2 Analog Right Y",
+            },
+            { 4, 5, 6, 7, 0, 8, 1, 9, 10, 11, 12, 13, 2, 3, 14, 15,
+              LibretroAxisLeftX, LibretroAxisLeftY, LibretroAxisRightX, LibretroAxisRightY },
+            {
+                SDL_SCANCODE_UP, SDL_SCANCODE_DOWN, SDL_SCANCODE_LEFT, SDL_SCANCODE_RIGHT,
+                SDL_SCANCODE_Z, SDL_SCANCODE_X, SDL_SCANCODE_A, SDL_SCANCODE_S,
+                SDL_SCANCODE_Q, SDL_SCANCODE_W, SDL_SCANCODE_E, SDL_SCANCODE_R,
+                SDL_SCANCODE_RSHIFT, SDL_SCANCODE_RETURN, SDL_SCANCODE_LSHIFT, SDL_SCANCODE_LCTRL,
+                SDL_SCANCODE_UNKNOWN, SDL_SCANCODE_UNKNOWN, SDL_SCANCODE_UNKNOWN, SDL_SCANCODE_UNKNOWN,
+            },
+            {
+                { "PS2 D-Pad Up", nullptr, nullptr, nullptr },
+                { "PS2 D-Pad Down", nullptr, nullptr, nullptr },
+                { "PS2 D-Pad Left", nullptr, nullptr, nullptr },
+                { "PS2 D-Pad Right", nullptr, nullptr, nullptr },
+                { "PS2 Cross", nullptr, nullptr, nullptr },
+                { "PS2 Circle", nullptr, nullptr, nullptr },
+                { "PS2 Square", nullptr, nullptr, nullptr },
+                { "PS2 Triangle", nullptr, nullptr, nullptr },
+                { "PS2 L1", nullptr, nullptr, nullptr },
+                { "PS2 R1", nullptr, nullptr, nullptr },
+                { "PS2 L2", nullptr, nullptr, nullptr },
+                { "PS2 R2", nullptr, nullptr, nullptr },
+                { "PS2 Select", nullptr, nullptr, nullptr },
+                { "PS2 Start", nullptr, nullptr, nullptr },
+                { "PS2 L3", nullptr, nullptr, nullptr },
+                { "PS2 R3", nullptr, nullptr, nullptr },
+                { "PS2 Analog Left X", nullptr, nullptr, nullptr },
+                { "PS2 Analog Left Y", nullptr, nullptr, nullptr },
+                { "PS2 Analog Right X", nullptr, nullptr, nullptr },
+                { "PS2 Analog Right Y", nullptr, nullptr, nullptr },
+            },
+        },
     };
     const int index = static_cast<int>(id);
-    return profiles[index >= 0 && index < 4 ? index : 0];
+    return profiles[index >= 0 && index < 5 ? index : 0];
 }
 
 // Loads the binding lists of the current section and, for the arcade profile,
@@ -386,7 +461,7 @@ inline LibretroInputProfileId libretroInputProfileForSystem(CoreLibretroSystem s
         case CoreLibretroSystem::Dreamcast:  return LibretroInputProfileId::Dreamcast;
         case CoreLibretroSystem::Naomi:      return LibretroInputProfileId::Arcade;
         case CoreLibretroSystem::Atomiswave: return LibretroInputProfileId::Arcade;
-        case CoreLibretroSystem::Ps2:        return LibretroInputProfileId::Psx;
+        case CoreLibretroSystem::Ps2:        return LibretroInputProfileId::Ps2;
         default:                             return LibretroInputProfileId::Psx;
     }
 }

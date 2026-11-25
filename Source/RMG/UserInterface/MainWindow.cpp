@@ -2076,6 +2076,7 @@ void MainWindow::configureUI(QApplication* app, bool showUI)
     QAction* const toolbarLabeledActions[] = {
         this->action_Toolbar_ArcadeInput,
         this->action_Toolbar_PsxInput,
+        this->action_Toolbar_Ps2Input,
     };
     for (QAction* action : toolbarLabeledActions)
     {
@@ -2914,6 +2915,7 @@ void MainWindow::updateActions(bool inEmulation, bool isPaused)
     this->action_Toolbar_Input->setEnabled(canConfigureInput);
     this->action_Toolbar_ArcadeInput->setEnabled(canConfigureInput);
     this->action_Toolbar_PsxInput->setEnabled(canConfigureInput);
+    this->action_Toolbar_Ps2Input->setEnabled(canConfigureInput);
     this->action_Ps2_Input->setEnabled(canConfigureInput);
     keyBinding = QString::fromStdString(CoreSettingsGetStringValue(SettingsID::KeyBinding_Settings));
     this->action_Settings_Settings->setShortcut(QKeySequence(keyBinding));
@@ -3289,6 +3291,8 @@ void MainWindow::connectActionSignals(void)
             this, &MainWindow::on_Action_Arcade_Input);
     connect(this->action_Toolbar_PsxInput, &QAction::triggered,
             this, &MainWindow::on_Action_Psx_Input);
+    connect(this->action_Toolbar_Ps2Input, &QAction::triggered,
+            this, &MainWindow::on_Action_Ps2_Input);
     connect(this->action_Toolbar_DcInput, &QAction::triggered,
             this, &MainWindow::on_Action_Dc_Input);
     connect(this->action_Toolbar_NaomiInput, &QAction::triggered,
@@ -4616,9 +4620,9 @@ void MainWindow::on_Action_Psx_Input(void)
 
 void MainWindow::on_Action_Ps2_Input(void)
 {
-    // PS2 uses the same DualShock button/analog layout as PS1; both sessions
-    // share the analog PSX input profile and its saved bindings.
-    Dialog::PsxInputDialog dialog(Dialog::LibretroInputProfileId::Psx, this);
+    // PS2 has its own DualShock 2 profile: L1/L2/R1/R2, L3/R3 and the two
+    // analog sticks are configured here, never through the PS1 dialog.
+    Dialog::PsxInputDialog dialog(Dialog::LibretroInputProfileId::Ps2, this);
     dialog.exec();
 }
 

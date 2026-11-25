@@ -1726,12 +1726,54 @@ static bool evalFbneoBindings(const std::vector<FbneoBinding>& bindings, const b
     return false;
 }
 
+// Analog rows are captured with extra==2, meaning the whole axis (both
+// directions). The older 0/1 encoding is still accepted as a half-axis press.
+static bool evalFbneoAnalogBinding(const std::vector<FbneoBinding>& bindings,
+                                   SDL_Gamepad* gamepad, SDL_Joystick* joystick,
+                                   int& value)
+{
+    for (const FbneoBinding& binding : bindings)
+    {
+        if (binding.type == FbneoInputSource_GamepadAxis && gamepad != nullptr &&
+            binding.data >= 0 && binding.data < SDL_GAMEPAD_AXIS_COUNT)
+        {
+            const int raw = SDL_GetGamepadAxis(gamepad, static_cast<SDL_GamepadAxis>(binding.data));
+            if (binding.extra == 2)
+            {
+                value = raw;
+                return true;
+            }
+            if (std::abs(raw) >= (FBNEO_AXIS_PEAK / 2) && (binding.extra ? raw > 0 : raw < 0))
+            {
+                value = binding.extra ? FBNEO_AXIS_PEAK : -FBNEO_AXIS_PEAK;
+                return true;
+            }
+        }
+        else if (binding.type == FbneoInputSource_JoystickAxis && joystick != nullptr &&
+                 binding.data >= 0 && binding.data < SDL_GetNumJoystickAxes(joystick))
+        {
+            const int raw = SDL_GetJoystickAxis(joystick, binding.data);
+            if (binding.extra == 2)
+            {
+                value = raw;
+                return true;
+            }
+            if (std::abs(raw) >= (FBNEO_AXIS_PEAK / 2) && (binding.extra ? raw > 0 : raw < 0))
+            {
+                value = binding.extra ? FBNEO_AXIS_PEAK : -FBNEO_AXIS_PEAK;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 // Live input state for one libretro profile. Indexes match
 // LibretroInputProfileId; index 0 is the original PlayStation layout, kept
 // byte-for-byte compatible with the settings saved by older builds.
 struct LibretroPadState
 {
-    int keys[16] = { 0 };
+    int keys[UserInterface::Dialog::LIBRETRO_MAX_PROFILE_ROWS] = { 0 };
     std::unordered_map<std::string, std::vector<FbneoBinding>> bindings;
     FbneoArcadePlayer players[FBNEO_MAX_PLAYERS];
     SDL_Gamepad* gamepad  = nullptr;
@@ -1747,6 +1789,7 @@ static const UserInterface::Dialog::LibretroInputProfile& libretroPadProfile(int
         case 1:  return libretroInputProfile(LibretroInputProfileId::Dreamcast);
         case 2:  return libretroInputProfile(LibretroInputProfileId::Naomi);
         case 3:  return libretroInputProfile(LibretroInputProfileId::Atomiswave);
+        case 4:  return libretroInputProfile(LibretroInputProfileId::Ps2);
         default: return libretroInputProfile(LibretroInputProfileId::Psx);
     }
 }
@@ -1754,14 +1797,14 @@ static const UserInterface::Dialog::LibretroInputProfile& libretroPadProfile(int
 static int libretroPadProfileIndex(CoreLibretroSystem system)
 {
     // NAOMI 1/2 and Atomiswave share one arcade profile and one saved binding
-    // set, exactly like Flycast Dojo's unified arcade controls. Only Dreamcast
-    // keeps its own input dialog.
+    // set, exactly like Flycast Dojo's unified arcade controls. Dreamcast and
+    // PS2 each keep their own dialog and saved binding section.
     switch (system)
     {
         case CoreLibretroSystem::Dreamcast:  return 1;
         case CoreLibretroSystem::Naomi:      return 2;
         case CoreLibretroSystem::Atomiswave: return 2;
-        case CoreLibretroSystem::Ps2:        return 0; // DualShock2 uses the PSX analog profile
+        case CoreLibretroSystem::Ps2:        return 4;
         default:                             return 0;
     }
 }
@@ -1783,7 +1826,7 @@ public:
 
         this->loadPlayers();
         this->openDevices();
-        for (int profile = 0; profile < 4; profile++)
+        for (int profile = 0; profile < 5; profile++)
         {
             this->loadLibretroKeys(profile);
         }
@@ -1796,7 +1839,7 @@ public:
 
     ~FbneoInputHandler() override
     {
-        for (int profile = 0; profile < 4; profile++)
+        for (int profile = 0; profile < 5; profile++)
         {
             LibretroPadState& pad = this->libretroPads[profile];
             if (pad.gamepad != nullptr)
@@ -1939,8 +1982,8 @@ private:
         }
 
         pad.bindings.clear();
-        bool keySet[16] = {};
-        bool rowSeen[16] = {};
+        bool keySet[UserInterface::Dialog::LIBRETRO_MAX_PROFILE_ROWS] = {};
+        bool rowSeen[UserInterface::Dialog::LIBRETRO_MAX_PROFILE_ROWS] = {};
         for (int row = 0; row < profile.count; row++)
         {
             pad.keys[row] = profile.defaults[row];
@@ -2476,11 +2519,10 @@ private:
                     {
                         continue;
                     }
+                    // A digital direction is only a D-pad bit. Moving the
+                    // analog packet as well made the core see two directions at
+                    // once (extra moves on PS2) and broke D-pad configuration.
                     mask |= static_cast<uint16_t>(1u << bit);
-                    if (bit == 4)  { ly = 32767; }
-                    if (bit == 5)  { ly = -32767; }
-                    if (bit == 6)  { lx = -32767; }
-                    if (bit == 7)  { lx = 32767; }
                     if (trace) addFired(profile.names[row], bit);
                 }
             }
@@ -2554,14 +2596,30 @@ private:
 
                 if (pad != nullptr)
                 {
-                    const int axisLx = psxScaleAxis(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTX));
-                    const int axisLy = psxScaleAxis(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTY));
-                    const int axisRx = psxScaleAxis(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHTX));
-                    const int axisRy = psxScaleAxis(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHTY));
-                    if (axisLx != 0) { lx = static_cast<int16_t>(axisLx); }
-                    if (axisLy != 0) { ly = static_cast<int16_t>(axisLy); }
-                    if (axisRx != 0) { rx = static_cast<int16_t>(axisRx); }
-                    if (axisRy != 0) { ry = static_cast<int16_t>(axisRy); }
+                    // A stick claimed by a dialog row belongs exclusively to
+                    // that row. Sending its raw axis too duplicated the input
+                    // (e.g. D-pad bound to the left stick also deflected the
+                    // analog stick, which fired unwanted moves in PS2 games).
+                    if (!claimedPadAxes[SDL_GAMEPAD_AXIS_LEFTX])
+                    {
+                        const int axisLx = psxScaleAxis(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTX));
+                        if (axisLx != 0) { lx = static_cast<int16_t>(axisLx); }
+                    }
+                    if (!claimedPadAxes[SDL_GAMEPAD_AXIS_LEFTY])
+                    {
+                        const int axisLy = psxScaleAxis(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTY));
+                        if (axisLy != 0) { ly = static_cast<int16_t>(axisLy); }
+                    }
+                    if (!claimedPadAxes[SDL_GAMEPAD_AXIS_RIGHTX])
+                    {
+                        const int axisRx = psxScaleAxis(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHTX));
+                        if (axisRx != 0) { rx = static_cast<int16_t>(axisRx); }
+                    }
+                    if (!claimedPadAxes[SDL_GAMEPAD_AXIS_RIGHTY])
+                    {
+                        const int axisRy = psxScaleAxis(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHTY));
+                        if (axisRy != 0) { ry = static_cast<int16_t>(axisRy); }
+                    }
 
                     const int lt = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER);
                     const int rt = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER);
@@ -2587,10 +2645,32 @@ private:
                 {
                     continue;
                 }
-                if (evalFbneoBindings(it->second, this->keyboardState, pad, joy) &&
-                    profile.bits[row] >= 0 && profile.bits[row] <= 15)
+                const int bit = profile.bits[row];
+                if (UserInterface::Dialog::isLibretroAnalogRow(bit))
                 {
-                    const int bit = profile.bits[row];
+                    int value = 0;
+                    if (evalFbneoAnalogBinding(it->second, pad, joy, value))
+                    {
+                        int16_t* target = nullptr;
+                        switch (bit)
+                        {
+                            case UserInterface::Dialog::LibretroAxisLeftX:  target = &lx; break;
+                            case UserInterface::Dialog::LibretroAxisLeftY:  target = &ly; break;
+                            case UserInterface::Dialog::LibretroAxisRightX: target = &rx; break;
+                            case UserInterface::Dialog::LibretroAxisRightY: target = &ry; break;
+                            default: break;
+                        }
+                        if (target != nullptr)
+                        {
+                            const int scaled = psxScaleAxis(value);
+                            *target = static_cast<int16_t>(scaled);
+                        }
+                    }
+                    continue;
+                }
+                if (evalFbneoBindings(it->second, this->keyboardState, pad, joy) &&
+                    bit >= 0 && bit <= 15)
+                {
                     mask |= static_cast<uint16_t>(1u << bit);
                     if (trace) addFired(profile.names[row], bit);
                 }
@@ -2630,7 +2710,7 @@ private:
     int             m_openRetryTicks = 0;
     int             m_openAttempts   = 0;
     bool            keyboardState[SDL_SCANCODE_COUNT];
-    LibretroPadState libretroPads[4];
+    LibretroPadState libretroPads[5];
     FbneoArcadePlayer players[FBNEO_MAX_PLAYERS];
     uint32_t        lastMask[FBNEO_MAX_PLAYERS] = { 0, 0, 0, 0 };
 };

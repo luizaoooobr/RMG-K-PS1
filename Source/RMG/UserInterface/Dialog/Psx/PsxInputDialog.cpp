@@ -52,7 +52,8 @@ PsxInputDialog::PsxInputDialog(LibretroInputProfileId profile, QWidget* parent)
     const int count = m_profile->count;
     setWindowTitle(tr(m_profile->title));
     setModal(true);
-    resize(520, profile == LibretroInputProfileId::Psx ? 480 : 560);
+    resize(520, profile == LibretroInputProfileId::Psx ? 480 :
+                 (profile == LibretroInputProfileId::Ps2 ? 680 : 560));
 
     auto* layout = new QVBoxLayout(this);
 
@@ -223,13 +224,17 @@ void PsxInputDialog::refreshTable()
                     label = tr("Gamepad Button %1").arg(m_data[i]);
                     break;
                 case Source_GamepadAxis:
-                    label = tr("Gamepad Axis %1 %2").arg(m_data[i]).arg(m_extra[i] ? "+" : "-");
+                    label = m_extra[i] == 2
+                        ? tr("Gamepad Axis %1 (both)").arg(m_data[i])
+                        : tr("Gamepad Axis %1 %2").arg(m_data[i]).arg(m_extra[i] ? "+" : "-");
                     break;
                 case Source_JoystickButton:
                     label = tr("Joystick Button %1").arg(m_data[i]);
                     break;
                 case Source_JoystickAxis:
-                    label = tr("Joystick Axis %1 %2").arg(m_data[i]).arg(m_extra[i] ? "+" : "-");
+                    label = m_extra[i] == 2
+                        ? tr("Joystick Axis %1 (both)").arg(m_data[i])
+                        : tr("Joystick Axis %1 %2").arg(m_data[i]).arg(m_extra[i] ? "+" : "-");
                     break;
                 case Source_JoystickHat:
                     label = tr("Joystick Hat %1").arg(m_data[i]);
@@ -376,7 +381,11 @@ bool PsxInputDialog::pollCaptureDevices()
                 {
                     m_capturedBinding.type = Source_GamepadAxis;
                     m_capturedBinding.data = i;
-                    m_capturedBinding.extra = (now > 0) ? 1 : 0;
+                    // Analog stick rows own the whole axis; digital rows keep
+                    // the +/- half-axis encoding.
+                    const bool fullAxis = m_capturing >= 0 && m_capturing < m_profile->count &&
+                        isLibretroAnalogRow(m_profile->bits[m_capturing]);
+                    m_capturedBinding.extra = fullAxis ? 2 : ((now > 0) ? 1 : 0);
                     return true;
                 }
                 if (static_cast<size_t>(i) < device.axisPrev.size()) device.axisPrev[i] = now;
@@ -407,7 +416,9 @@ bool PsxInputDialog::pollCaptureDevices()
                 {
                     m_capturedBinding.type = Source_JoystickAxis;
                     m_capturedBinding.data = i;
-                    m_capturedBinding.extra = (now > 0) ? 1 : 0;
+                    const bool fullAxis = m_capturing >= 0 && m_capturing < m_profile->count &&
+                        isLibretroAnalogRow(m_profile->bits[m_capturing]);
+                    m_capturedBinding.extra = fullAxis ? 2 : ((now > 0) ? 1 : 0);
                     return true;
                 }
                 if (static_cast<size_t>(i) < device.axisPrev.size()) device.axisPrev[i] = now;
